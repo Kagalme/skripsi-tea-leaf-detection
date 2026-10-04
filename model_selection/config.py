@@ -39,27 +39,6 @@ else:
 
 DEFAULT_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-def sync_data_yaml_path():
-    """Memastikan path di data.yaml otomatis disinkronkan dengan lingkungan (Colab vs Lokal)."""
-    if os.path.exists(DATA_YAML_PATH):
-        try:
-            with open(DATA_YAML_PATH, "r", encoding="utf-8") as f:
-                content = f.read()
-            lines = content.splitlines()
-            new_lines = []
-            target_path = DATASET_DIR.replace("\\", "/")
-            for line in lines:
-                if line.strip().startswith("path:"):
-                    new_lines.append(f"path: {target_path}")
-                else:
-                    new_lines.append(line)
-            with open(DATA_YAML_PATH, "w", encoding="utf-8") as f:
-                f.write("\n".join(new_lines) + "\n")
-        except Exception:
-            pass
-
-sync_data_yaml_path()
-
 # ==========================================
 # 2. DATASET DEFINITIONS & EXACT CLASS NAMES
 # ==========================================
@@ -75,6 +54,32 @@ CLASS_NAMES = [
 ]
 
 NUM_CLASSES = len(CLASS_NAMES)  # 7 classes
+
+def ensure_valid_data_yaml():
+    """Memastikan data.yaml selalu terisi lengkap dan path-nya valid untuk lingkungan aktif (Colab vs Lokal)."""
+    target_path = DATASET_DIR.replace("\\", "/")
+    names_yaml = "\n".join(f"  {idx}: {name}" for idx, name in enumerate(CLASS_NAMES))
+    yaml_content = f"""# Dataset YOLO Tanaman Teh (Fase 1: Dataset Preparation)
+path: {target_path}
+train: images/train
+val: images/val
+test: images/test
+
+nc: {NUM_CLASSES}
+
+names:
+{names_yaml}
+"""
+    try:
+        os.makedirs(os.path.dirname(DATA_YAML_PATH), exist_ok=True)
+        with open(DATA_YAML_PATH, "w", encoding="utf-8") as f:
+            f.write(yaml_content)
+    except Exception as e:
+        print(f"[WARNING] Gagal menulis {DATA_YAML_PATH}: {e}")
+
+# Otomatis pastikan data.yaml valid saat config dimuat
+ensure_valid_data_yaml()
+
 
 # Distribusi data per split (hasil split bebas kebocoran / Grouped Stratified Split)
 SPLIT_COUNTS = {
