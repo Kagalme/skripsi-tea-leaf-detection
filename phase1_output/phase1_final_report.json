@@ -1,0 +1,48 @@
+{
+  "total_images": 5278,
+  "successful_labels": 5278,
+  "failed_labels": [],
+  "strategy_counts": {
+    "strategy1_island": 4778,
+    "strategy3_fallback": 85,
+    "strategy2_saturation": 403,
+    "strategy4_sheet_constrained": 12
+  },
+  "split_counts": {
+    "test": 529,
+    "val": 1051,
+    "train": 3698
+  },
+  "class_counts": {
+    "Tea algal leaf spot": 418,
+    "Brown Blight": 508,
+    "Gray Blight": 1013,
+    "Helopeltis": 607,
+    "Red Spider": 515,
+    "Green Mirid Bug": 1282,
+    "Healty Leaf": 935
+  },
+  "previews": [
+    "D:\\SKRIPSI\\tea_yolo\\previews\\preview_cls0_tea_algal_leaf_spot_00134.jpg",
+    "D:\\SKRIPSI\\tea_yolo\\previews\\preview_cls0_tea_algal_leaf_spot_00128.jpg",
+    "D:\\SKRIPSI\\tea_yolo\\previews\\preview_cls0_tea_algal_leaf_spot_00276.jpg",
+    "D:\\SKRIPSI\\tea_yolo\\previews\\preview_cls1_brown_blight_00082.jpg",
+    "D:\\SKRIPSI\\tea_yolo\\previews\\preview_cls1_brown_blight_00282.jpg",
+    "D:\\SKRIPSI\\tea_yolo\\previews\\preview_cls1_brown_blight_00507.jpg",
+    "D:\\SKRIPSI\\tea_yolo\\previews\\preview_cls2_gray_blight_00787.jpg",
+    "D:\\SKRIPSI\\tea_yolo\\previews\\preview_cls2_gray_blight_00998.jpg",
+    "D:\\SKRIPSI\\tea_yolo\\previews\\preview_cls2_gray_blight_00080.jpg",
+    "D:\\SKRIPSI\\tea_yolo\\previews\\preview_cls3_helopeltis_00434.jpg",
+    "D:\\SKRIPSI\\tea_yolo\\previews\\preview_cls3_helopeltis_00524.jpg",
+    "D:\\SKRIPSI\\tea_yolo\\previews\\preview_cls3_helopeltis_00018.jpg",
+    "D:\\SKRIPSI\\tea_yolo\\previews\\preview_cls4_red_spider_00158.jpg",
+    "D:\\SKRIPSI\\tea_yolo\\previews\\preview_cls4_red_spider_00179.jpg",
+    "D:\\SKRIPSI\\tea_yolo\\previews\\preview_cls4_red_spider_00366.jpg",
+    "D:\\SKRIPSI\\tea_yolo\\previews\\preview_cls5_green_mirid_bug_00915.jpg",
+    "D:\\SKRIPSI\\tea_yolo\\previews\\preview_cls5_green_mirid_bug_00998.jpg",
+    "D:\\SKRIPSI\\tea_yolo\\previews\\preview_cls5_green_mirid_bug_00437.jpg",
+    "D:\\SKRIPSI\\tea_yolo\\previews\\preview_cls6_healthy_00494.jpg",
+    "D:\\SKRIPSI\\tea_yolo\\previews\\preview_cls6_healthy_00471.jpg",
+    "D:\\SKRIPSI\\tea_yolo\\previews\\preview_cls6_healthy_00874.jpg"
+  ]
+}

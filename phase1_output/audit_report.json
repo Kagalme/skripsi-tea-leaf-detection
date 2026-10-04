@@ -1,0 +1,193 @@
+{
+  "total_images": 5278,
+  "per_class": {
+    "1. Tea algal leaf spot": {
+      "class_id": 0,
+      "count": 418,
+      "non_image_files": []
+    },
+    "2. Brown Blight": {
+      "class_id": 1,
+      "count": 508,
+      "non_image_files": []
+    },
+    "3. Gray Blight": {
+      "class_id": 2,
+      "count": 1013,
+      "non_image_files": []
+    },
+    "4. Helopeltis": {
+      "class_id": 3,
+      "count": 607,
+      "non_image_files": []
+    },
+    "5. Red spider": {
+      "class_id": 4,
+      "count": 515,
+      "non_image_files": []
+    },
+    "6. Green mirid bug": {
+      "class_id": 5,
+      "count": 1282,
+      "non_image_files": []
+    },
+    "7. Healthy leaf": {
+      "class_id": 6,
+      "count": 935,
+      "non_image_files": []
+    }
+  },
+  "resolutions": {
+    "1200x1594": 1190,
+    "1200x904": 712,
+    "1200x1600": 2642,
+    "1200x900": 734
+  },
+  "corrupted": [],
+  "exact_duplicates": [
+    {
+      "md5": "62975a83569bdb8ece4f28c6b7c12691",
+      "files": [
+        "D:\\SKRIPSI\\teaLeafBD\\3. Gray Blight\\gray_blight_00493.jpg",
+        "D:\\SKRIPSI\\teaLeafBD\\3. Gray Blight\\gray_blight_00494.jpg"
+      ]
+    }
+  ],
+  "near_duplicates": [
+    {
+      "phash": "b3cccc3326db24cc",
+      "files": [
+        "D:\\SKRIPSI\\teaLeafBD\\1. Tea algal leaf spot\\tea_algal_leaf_spot_00076.jpg",
+        "D:\\SKRIPSI\\teaLeafBD\\4. Helopeltis\\helopeltis_00359.jpg"
+      ]
+    },
+    {
+      "phash": "d57d9a32740d3931",
+      "files": [
+        "D:\\SKRIPSI\\teaLeafBD\\1. Tea algal leaf spot\\tea_algal_leaf_spot_00136.jpg",
+        "D:\\SKRIPSI\\teaLeafBD\\1. Tea algal leaf spot\\tea_algal_leaf_spot_00137.jpg"
+      ]
+    },
+    {
+      "phash": "b191976f6894955a",
+      "files": [
+        "D:\\SKRIPSI\\teaLeafBD\\1. Tea algal leaf spot\\tea_algal_leaf_spot_00144.jpg",
+        "D:\\SKRIPSI\\teaLeafBD\\1. Tea algal leaf spot\\tea_algal_leaf_spot_00145.jpg"
+      ]
+    },
+    {
+      "phash": "b2c6cd196c3163b3",
+      "files": [
+        "D:\\SKRIPSI\\teaLeafBD\\2. Brown Blight\\brown_blight_00025.jpg",
+        "D:\\SKRIPSI\\teaLeafBD\\2. Brown Blight\\brown_blight_00508.jpg"
+      ]
+    },
+    {
+      "phash": "afdb902f49940f4a",
+      "files": [
+        "D:\\SKRIPSI\\teaLeafBD\\2. Brown Blight\\brown_blight_00078.jpg",
+        "D:\\SKRIPSI\\teaLeafBD\\2. Brown Blight\\brown_blight_00079.jpg"
+      ]
+    },
+    {
+      "phash": "ebc0953f58e08f98",
+      "files": [
+        "D:\\SKRIPSI\\teaLeafBD\\2. Brown Blight\\brown_blight_00094.jpg",
+        "D:\\SKRIPSI\\teaLeafBD\\2. Brown Blight\\brown_blight_00095.jpg"
+      ]
+    },
+    {
+      "phash": "ebc0953d6ac23d8c",
+      "files": [
+        "D:\\SKRIPSI\\teaLeafBD\\2. Brown Blight\\brown_blight_00098.jpg",
+        "D:\\SKRIPSI\\teaLeafBD\\2. Brown Blight\\brown_blight_00099.jpg"
+      ]
+    },
+    {
+      "phash": "b3c68c9b31c927c6",
+      "files": [
+        "D:\\SKRIPSI\\teaLeafBD\\2. Brown Blight\\brown_blight_00201.jpg",
+        "D:\\SKRIPSI\\teaLeafBD\\2. Brown Blight\\brown_blight_00202.jpg"
+      ]
+    },
+    {
+      "phash": "b3d4cf99cc649826",
+      "files": [
+        "D:\\SKRIPSI\\teaLeafBD\\3. Gray Blight\\gray_blight_00493.jpg",
+        "D:\\SKRIPSI\\teaLeafBD\\3. Gray Blight\\gray_blight_00494.jpg"
+      ]
+    },
+    {
+      "phash": "f3cc8c3366cc9913",
+      "files": [
+        "D:\\SKRIPSI\\teaLeafBD\\3. Gray Blight\\gray_blight_00692.jpg",
+        "D:\\SKRIPSI\\teaLeafBD\\4. Helopeltis\\helopeltis_00443.jpg"
+      ]
+    },
+    {
+      "phash": "e6d099e626999966",
+      "files": [
+        "D:\\SKRIPSI\\teaLeafBD\\4. Helopeltis\\helopeltis_00054.jpg",
+        "D:\\SKRIPSI\\teaLeafBD\\4. Helopeltis\\helopeltis_00055.jpg"
+      ]
+    },
+    {
+      "phash": "e6d199e666999922",
+      "files": [
+        "D:\\SKRIPSI\\teaLeafBD\\4. Helopeltis\\helopeltis_00070.jpg",
+        "D:\\SKRIPSI\\teaLeafBD\\6. Green mirid bug\\green_mirid_bug_00069.jpg"
+      ]
+    },
+    {
+      "phash": "b3c4cc3333cccc33",
+      "files": [
+        "D:\\SKRIPSI\\teaLeafBD\\4. Helopeltis\\helopeltis_00080.jpg",
+        "D:\\SKRIPSI\\teaLeafBD\\6. Green mirid bug\\green_mirid_bug_00380.jpg"
+      ]
+    },
+    {
+      "phash": "b3cecc3132ce9931",
+      "files": [
+        "D:\\SKRIPSI\\teaLeafBD\\4. Helopeltis\\helopeltis_00165.jpg",
+        "D:\\SKRIPSI\\teaLeafBD\\6. Green mirid bug\\green_mirid_bug_01185.jpg"
+      ]
+    },
+    {
+      "phash": "a6cc993366cc9933",
+      "files": [
+        "D:\\SKRIPSI\\teaLeafBD\\4. Helopeltis\\helopeltis_00512.jpg",
+        "D:\\SKRIPSI\\teaLeafBD\\7. Healthy leaf\\healthy_00338.jpg"
+      ]
+    },
+    {
+      "phash": "b3cc8c3333ce13cc",
+      "files": [
+        "D:\\SKRIPSI\\teaLeafBD\\4. Helopeltis\\helopeltis_00547.jpg",
+        "D:\\SKRIPSI\\teaLeafBD\\4. Helopeltis\\helopeltis_00548.jpg"
+      ]
+    },
+    {
+      "phash": "f3c6cc3133ce9831",
+      "files": [
+        "D:\\SKRIPSI\\teaLeafBD\\4. Helopeltis\\helopeltis_00599.jpg",
+        "D:\\SKRIPSI\\teaLeafBD\\6. Green mirid bug\\green_mirid_bug_01232.jpg",
+        "D:\\SKRIPSI\\teaLeafBD\\6. Green mirid bug\\green_mirid_bug_01256.jpg"
+      ]
+    },
+    {
+      "phash": "e699996666991267",
+      "files": [
+        "D:\\SKRIPSI\\teaLeafBD\\5. Red spider\\red_spider_00226.jpg",
+        "D:\\SKRIPSI\\teaLeafBD\\5. Red spider\\red_spider_00227.jpg"
+      ]
+    },
+    {
+      "phash": "e49b96646986b479",
+      "files": [
+        "D:\\SKRIPSI\\teaLeafBD\\6. Green mirid bug\\green_mirid_bug_00689.jpg",
+        "D:\\SKRIPSI\\teaLeafBD\\6. Green mirid bug\\green_mirid_bug_00690.jpg"
+      ]
+    }
+  ],
+  "unexpected_format": []
+}

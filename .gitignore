@@ -1,0 +1,31 @@
+# ==========================================
+# DATASET BESAR (JANGAN DI-PUSH KE GITHUB)
+# ==========================================
+tea_yolo/
+tea_yolo.zip
+teaLeafBD/
+
+# ==========================================
+# OUTPUT TRAINING & CHECKPOINTS
+# ==========================================
+phase2_runs/
+*.pth
+*.pt
+!model_selection/yolo26n.pt
+
+# ==========================================
+# PYTHON ARTIFACTS
+# ==========================================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+# ==========================================
+# ARCHIVES
+# ==========================================
+*.zip
+*.tar.gz
