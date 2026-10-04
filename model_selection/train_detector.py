@@ -389,7 +389,7 @@ def train_ultralytics_model(model_type, epochs=DEFAULT_EPOCHS, batch_size=DEFAUL
         device=device,
         project=save_project,
         name=save_name,
-        exist_ok=False,
+        exist_ok=True,
         seed=seed,
         patience=15,
         plots=True,

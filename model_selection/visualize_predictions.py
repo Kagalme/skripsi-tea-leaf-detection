@@ -105,6 +105,18 @@ def run_visual_analysis(model_type, weights_path=None, imgsz=DEFAULT_IMGSZ, devi
                 os.path.join(model_dir, "best.pt"),
                 os.path.join(BASE_DIR, "phase2_runs", "yolo26n_baseline_50ep", "weights", "best.pt") if model_type == "yolo26n" else None
             ]
+            parent_dir = os.path.dirname(model_dir)
+            base_name = os.path.basename(model_dir)
+            if os.path.exists(parent_dir):
+                matching_dirs = sorted(
+                    [os.path.join(parent_dir, d) for d in os.listdir(parent_dir) if d.startswith(base_name)],
+                    key=lambda p: os.path.getmtime(p),
+                    reverse=True
+                )
+                for md in matching_dirs:
+                    candidate_weights.append(os.path.join(md, "weights", "best.pt"))
+                    candidate_weights.append(os.path.join(md, "best.pt"))
+
             weights_path = next((w for w in candidate_weights if w and os.path.exists(w)), None)
 
         if weights_path and os.path.exists(weights_path):

@@ -57,7 +57,7 @@ def benchmark_model_efficiency(model, device, imgsz=DEFAULT_IMGSZ, num_warmup=10
     Mengukur latensi inferensi (ms/image), FPS, dan perkiraan GFLOPs.
     """
     model.eval()
-    dummy_input = torch.randn(1, 3, imgsz, imgsz).to(device)
+    dummy_input = torch.rand(1, 3, imgsz, imgsz).to(device)
 
     # Warmup
     with torch.no_grad():
@@ -279,10 +279,33 @@ def evaluate_test_set(model_type, weights_path=None, imgsz=DEFAULT_IMGSZ, device
         # 2. Kasus Ultralytics (RT-DETR atau YOLO26n)
         from ultralytics import YOLO, RTDETR
         if weights_path is None:
-            weights_path = os.path.join(save_dir, "weights", "best.pt")
-        
+            candidates = [
+                os.path.join(save_dir, "weights", "best.pt"),
+                os.path.join(save_dir, "best.pt"),
+            ]
+            parent_dir = os.path.dirname(save_dir)
+            base_name = os.path.basename(save_dir)
+            if os.path.exists(parent_dir):
+                matching_dirs = sorted(
+                    [os.path.join(parent_dir, d) for d in os.listdir(parent_dir) if d.startswith(base_name)],
+                    key=lambda p: os.path.getmtime(p),
+                    reverse=True
+                )
+                for md in matching_dirs:
+                    candidates.append(os.path.join(md, "weights", "best.pt"))
+                    candidates.append(os.path.join(md, "best.pt"))
+
+            weights_path = next((c for c in candidates if os.path.exists(c)), None)
+
+        if weights_path is None or not os.path.exists(weights_path):
+            raise FileNotFoundError(
+                f"[ERROR] Bobot hasil training (best.pt) tidak ditemukan di {save_dir} atau subfolder terkait! "
+                f"Pastikan training model {model_type} telah selesai dijalankan."
+            )
+
+        print(f"[INFO] Memuat bobot checkpoint hasil training: {weights_path}")
         model_cls = RTDETR if model_type == "rtdetr" else YOLO
-        model = model_cls(weights_path if os.path.exists(weights_path) else f"{model_type}.pt")
+        model = model_cls(weights_path)
         model_size_mb = os.path.getsize(weights_path) / (1024 * 1024) if os.path.exists(weights_path) else 0.0
 
         latency_ms, fps, gflops = benchmark_model_efficiency(model, device, imgsz=imgsz)
