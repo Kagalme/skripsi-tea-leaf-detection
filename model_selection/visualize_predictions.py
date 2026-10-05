@@ -144,42 +144,70 @@ def run_visual_analysis(model_type, weights_path=None, imgsz=DEFAULT_IMGSZ, devi
             if not os.path.exists(orig_img_path):
                 continue
 
+            # Dapatkan dimensi gambar asli untuk unifikasi koordinat
+            with Image.open(orig_img_path) as tmp_img:
+                w_orig, h_orig = tmp_img.size
+            scale_x = w_orig / imgsz
+            scale_y = h_orig / imgsz
+
+            # Ground Truth dikonversi ke koordinat gambar asli
+            raw_gb = targets[0]["boxes"].cpu().numpy()
+            gl = (targets[0]["labels"].cpu().numpy() - spec["background_offset"])
+
+            gb = []
+            for b in raw_gb:
+                gb.append([b[0] * scale_x, b[1] * scale_y, b[2] * scale_x, b[3] * scale_y])
+            gb = np.array(gb) if len(gb) > 0 else np.zeros((0, 4))
+
+            # Prediksi Model
             if is_torchvision:
-                images = [img.to(device) for img in images]
-                outputs = model(images)
-                pb = outputs[0]["boxes"].cpu().numpy()
+                images_dev = [img.to(device) for img in images]
+                outputs = model(images_dev)
+                raw_pb = outputs[0]["boxes"].cpu().numpy()
                 ps = outputs[0]["scores"].cpu().numpy()
                 pl = (outputs[0]["labels"].cpu().numpy() - spec["background_offset"])
+
+                # Skalakan koordinat deteksi torchvision ke dimensi gambar asli
+                pb = []
+                for b in raw_pb:
+                    pb.append([b[0] * scale_x, b[1] * scale_y, b[2] * scale_x, b[3] * scale_y])
+                pb = np.array(pb) if len(pb) > 0 else np.zeros((0, 4))
             else:
-                results = model.predict(orig_img_path, conf=0.1, imgsz=imgsz, device=device, verbose=False)
+                results = model.predict(orig_img_path, conf=0.25, imgsz=imgsz, device=device, verbose=False)
                 res = results[0]
                 pb = res.boxes.xyxy.cpu().numpy()
                 ps = res.boxes.conf.cpu().numpy()
                 pl = res.boxes.cls.cpu().numpy().astype(int)
 
-                if len(gb) > 0 and len(pb) == 0:
-                    # Missed detection (FN)
-                    if len(categories["False_Negative"]) < max_samples:
-                        categories["False_Negative"].append((orig_img_path, gb[0], gl[0], None, None, None))
-                elif len(gb) > 0 and len(pb) > 0:
-                    iou = compute_iou(gb[0], pb[0])
-                    gt_cls = gl[0]
-                    pred_cls = pl[0]
-                    pred_score = ps[0]
+            # Filter deteksi dengan confidence >= 0.25
+            high_conf = ps >= 0.25
+            pb = pb[high_conf]
+            ps = ps[high_conf]
+            pl = pl[high_conf]
 
-                    if iou >= 0.5 and gt_cls == pred_cls:
-                        if len(categories["True_Positive"]) < max_samples:
-                            categories["True_Positive"].append((orig_img_path, gb[0], gt_cls, pb[0], pred_cls, pred_score))
-                    elif iou >= 0.5 and gt_cls != pred_cls:
-                        if len(categories["Misclassification"]) < max_samples:
-                            categories["Misclassification"].append((orig_img_path, gb[0], gt_cls, pb[0], pred_cls, pred_score))
-                    elif 0.1 <= iou < 0.5 and gt_cls == pred_cls:
-                        if len(categories["Localization_Error"]) < max_samples:
-                            categories["Localization_Error"].append((orig_img_path, gb[0], gt_cls, pb[0], pred_cls, pred_score))
+            if len(gb) > 0 and len(pb) == 0:
+                # Missed detection (FN)
+                if len(categories["False_Negative"]) < max_samples:
+                    categories["False_Negative"].append((orig_img_path, gb[0], gl[0], None, None, None))
+            elif len(gb) > 0 and len(pb) > 0:
+                iou = compute_iou(gb[0], pb[0])
+                gt_cls = gl[0]
+                pred_cls = pl[0]
+                pred_score = ps[0]
 
-                # Hentikan jika semua kategori sudah terkumpul
-                if all(len(v) >= max_samples for v in categories.values()):
-                    break
+                if iou >= 0.5 and gt_cls == pred_cls:
+                    if len(categories["True_Positive"]) < max_samples:
+                        categories["True_Positive"].append((orig_img_path, gb[0], gt_cls, pb[0], pred_cls, pred_score))
+                elif iou >= 0.5 and gt_cls != pred_cls:
+                    if len(categories["Misclassification"]) < max_samples:
+                        categories["Misclassification"].append((orig_img_path, gb[0], gt_cls, pb[0], pred_cls, pred_score))
+                elif 0.1 <= iou < 0.5 and gt_cls == pred_cls:
+                    if len(categories["Localization_Error"]) < max_samples:
+                        categories["Localization_Error"].append((orig_img_path, gb[0], gt_cls, pb[0], pred_cls, pred_score))
+
+            # Hentikan jika semua kategori sudah terkumpul
+            if all(len(v) >= max_samples for v in categories.values()):
+                break
 
         # Render dan simpan visual grid
         for cat_name, samples in categories.items():
@@ -191,18 +219,11 @@ def run_visual_analysis(model_type, weights_path=None, imgsz=DEFAULT_IMGSZ, devi
             
             for ax, (img_path, gbox, gcls, pbox, pcls, pscore) in zip(axes, samples):
                 img = Image.open(img_path).convert("RGB")
-                w_orig, h_orig = img.size
-                scale_x = w_orig / imgsz
-                scale_y = h_orig / imgsz
-
-                # Scaled GT box
-                gbox_scaled = [gbox[0] * scale_x, gbox[1] * scale_y, gbox[2] * scale_x, gbox[3] * scale_y]
-                img = draw_bounding_box(img, gbox_scaled, f"GT: {CLASS_NAMES[gcls]}", color="green")
+                img = draw_bounding_box(img, gbox, f"GT: {CLASS_NAMES[gcls]}", color="green")
 
                 if pbox is not None:
-                    pbox_scaled = [pbox[0] * scale_x, pbox[1] * scale_y, pbox[2] * scale_x, pbox[3] * scale_y]
                     color = "blue" if pcls == gcls else "red"
-                    img = draw_bounding_box(img, pbox_scaled, f"Pred: {CLASS_NAMES[pcls]} ({pscore:.2f})", color=color)
+                    img = draw_bounding_box(img, pbox, f"Pred: {CLASS_NAMES[pcls]} ({pscore:.2f})", color=color)
 
                 ax.imshow(img)
                 ax.axis("off")
