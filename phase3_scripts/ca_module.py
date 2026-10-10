@@ -120,28 +120,54 @@ def register_ca_module():
     Panggil fungsi ini SEBELUM: model = YOLO('yolo26n_ca.yaml')
     """
     try:
+        import sys
         import ultralytics.nn.modules as ult_modules
         import ultralytics.nn.tasks as ult_tasks
 
-        # Daftarkan ke modul Ultralytics
-        ult_modules.CoordAttYOLO = CoordAttYOLO
-
-        # Daftarkan ke __all__ agar terekspos
+        # 1. Daftarkan ke modul ultralytics.nn.modules
+        setattr(ult_modules, 'CoordAttYOLO', CoordAttYOLO)
+        ult_modules.__dict__['CoordAttYOLO'] = CoordAttYOLO
         if hasattr(ult_modules, '__all__') and 'CoordAttYOLO' not in ult_modules.__all__:
             ult_modules.__all__.append('CoordAttYOLO')
 
-        # Pastikan parse_model bisa menemukan kelas
+        # 2. Daftarkan ke ultralytics.nn.tasks
+        setattr(ult_tasks, 'CoordAttYOLO', CoordAttYOLO)
+        ult_tasks.__dict__['CoordAttYOLO'] = CoordAttYOLO
+        if 'ultralytics.nn.tasks' in sys.modules:
+            sys.modules['ultralytics.nn.tasks'].__dict__['CoordAttYOLO'] = CoordAttYOLO
+
+        # 3. Injeksi langsung ke __globals__ milik parse_model dan bungkus parse_model
         if hasattr(ult_tasks, 'parse_model'):
-            # Tambahkan ke globals parse_model agar resolusi nama berhasil
-            import ultralytics.nn.tasks as tasks_module
-            tasks_module.__dict__['CoordAttYOLO'] = CoordAttYOLO
+            ult_tasks.parse_model.__globals__['CoordAttYOLO'] = CoordAttYOLO
+            orig_parse = ult_tasks.parse_model
+
+            def wrapped_parse_model(*args, **kwargs):
+                orig_parse.__globals__['CoordAttYOLO'] = CoordAttYOLO
+                wrapped_parse_model.__globals__['CoordAttYOLO'] = CoordAttYOLO
+                return orig_parse(*args, **kwargs)
+
+            wrapped_parse_model.__globals__['CoordAttYOLO'] = CoordAttYOLO
+            ult_tasks.parse_model = wrapped_parse_model
+
+        # 4. Patch langsung berkas tasks.py di disk jika writable (sangat penting untuk Colab)
+        try:
+            tasks_file = getattr(ult_tasks, '__file__', None)
+            if tasks_file and os.path.exists(tasks_file):
+                with open(tasks_file, 'r', encoding='utf-8') as f:
+                    txt = f.read()
+                if 'CoordAttYOLO' not in txt:
+                    patch = "\n# === AUTO INJECT FASE 3 CA ===\nimport sys\nfor p in ['/content', '.']:\n    if p not in sys.path: sys.path.insert(0, p)\ntry:\n    from phase3_scripts.ca_module import CoordAttYOLO\nexcept Exception:\n    pass\n# ==============================\n"
+                    with open(tasks_file, 'w', encoding='utf-8') as f:
+                        f.write(patch + txt)
+                    print("[CA] File ultralytics/nn/tasks.py berhasil di-patch permanen.")
+        except Exception:
+            pass
 
         print("[CA] CoordAttYOLO berhasil didaftarkan ke Ultralytics registry.")
         return True
 
     except Exception as e:
         print(f"[CA][WARNING] Pendaftaran CA ke registry gagal: {e}")
-        print("[CA] Akan menggunakan metode fallback (custom trainer).")
         return False
 
 
