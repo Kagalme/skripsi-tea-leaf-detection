@@ -96,78 +96,61 @@ class CoordAttYOLO(CoordAtt):
     """
     Wrapper agar CoordAtt dapat diparsing oleh Ultralytics YAML builder.
 
-    Ultralytics memanggil:
-        layer = CoordAttYOLO(c1, *args)
-    di mana c1 = channel input (dari layer sebelumnya), args dari YAML.
-
-    Sehingga signature: __init__(self, c1, c2=None, reduction=32)
-    c2 boleh None atau sama dengan c1 (untuk koneksi residual).
+    Mendukung pemanggilan:
+      - CoordAttYOLO(c1, reduction=32)
+      - CoordAttYOLO(c1, c2, reduction=32)
+      - Dari YAML via [c1, reduction] atau [reduction]
     """
 
-    def __init__(self, c1: int, c2: int = None, reduction: int = 32):
-        c2 = c2 or c1  # default oup = inp (channel-preserving)
-        super().__init__(inp=c1, oup=c2, reduction=reduction)
-        # Simpan untuk Ultralytics info logging
+    def __init__(self, c1: int, c2: int = None, reduction: int = 32, *args, **kwargs):
+        # Jika c2 adalah reduction ratio (misalnya [256, 32] dari YAML di mana 32 adalah reduction):
+        if c2 is not None and c2 <= 64 and (reduction == 32 or reduction is None):
+            actual_reduction = c2
+            actual_c2 = c1
+        else:
+            actual_c2 = c2 or c1
+            actual_reduction = reduction or 32
+
+        super().__init__(inp=c1, oup=actual_c2, reduction=actual_reduction)
         self.c1 = c1
-        self.c2 = c2
+        self.c2 = actual_c2
 
 
 def register_ca_module():
     """
-    Daftarkan CoordAttYOLO ke dalam namespace Ultralytics agar dapat
-    diparsing dari file YAML saat YOLO() dipanggil.
+    Daftarkan CoordAttYOLO ke dalam namespace PyTorch (torch.nn) dan Ultralytics
+    secara murni di memori (in-memory), TANPA memodifikasi berkas pustaka di disk.
 
-    Panggil fungsi ini SEBELUM: model = YOLO('yolo26n_ca.yaml')
+    Karena arsitektur YAML menggunakan 'nn.CoordAttYOLO', Ultralytics secara
+    native memanggil getattr(torch.nn, 'CoordAttYOLO') tanpa menimbulkan KeyError
+    atau SyntaxError.
     """
     try:
-        import sys
-        import ultralytics.nn.modules as ult_modules
-        import ultralytics.nn.tasks as ult_tasks
+        import torch.nn as nn
 
-        # 1. Daftarkan ke modul ultralytics.nn.modules
-        setattr(ult_modules, 'CoordAttYOLO', CoordAttYOLO)
-        ult_modules.__dict__['CoordAttYOLO'] = CoordAttYOLO
-        if hasattr(ult_modules, '__all__') and 'CoordAttYOLO' not in ult_modules.__all__:
-            ult_modules.__all__.append('CoordAttYOLO')
+        # 1. Daftarkan ke torch.nn (Standar resmi PyTorch / Ultralytics)
+        setattr(nn, 'CoordAttYOLO', CoordAttYOLO)
 
-        # 2. Daftarkan ke ultralytics.nn.tasks
-        setattr(ult_tasks, 'CoordAttYOLO', CoordAttYOLO)
-        ult_tasks.__dict__['CoordAttYOLO'] = CoordAttYOLO
-        if 'ultralytics.nn.tasks' in sys.modules:
-            sys.modules['ultralytics.nn.tasks'].__dict__['CoordAttYOLO'] = CoordAttYOLO
-
-        # 3. Injeksi langsung ke __globals__ milik parse_model dan bungkus parse_model
-        if hasattr(ult_tasks, 'parse_model'):
-            ult_tasks.parse_model.__globals__['CoordAttYOLO'] = CoordAttYOLO
-            orig_parse = ult_tasks.parse_model
-
-            def wrapped_parse_model(*args, **kwargs):
-                orig_parse.__globals__['CoordAttYOLO'] = CoordAttYOLO
-                wrapped_parse_model.__globals__['CoordAttYOLO'] = CoordAttYOLO
-                return orig_parse(*args, **kwargs)
-
-            wrapped_parse_model.__globals__['CoordAttYOLO'] = CoordAttYOLO
-            ult_tasks.parse_model = wrapped_parse_model
-
-        # 4. Patch langsung berkas tasks.py di disk jika writable (sangat penting untuk Colab)
+        # 2. Daftarkan juga ke namespace Ultralytics untuk kompatibilitas ganda
         try:
-            tasks_file = getattr(ult_tasks, '__file__', None)
-            if tasks_file and os.path.exists(tasks_file):
-                with open(tasks_file, 'r', encoding='utf-8') as f:
-                    txt = f.read()
-                if 'CoordAttYOLO' not in txt:
-                    patch = "\n# === AUTO INJECT FASE 3 CA ===\nimport sys\nfor p in ['/content', '.']:\n    if p not in sys.path: sys.path.insert(0, p)\ntry:\n    from phase3_scripts.ca_module import CoordAttYOLO\nexcept Exception:\n    pass\n# ==============================\n"
-                    with open(tasks_file, 'w', encoding='utf-8') as f:
-                        f.write(patch + txt)
-                    print("[CA] File ultralytics/nn/tasks.py berhasil di-patch permanen.")
+            import ultralytics.nn.modules as ult_modules
+            import ultralytics.nn.tasks as ult_tasks
+
+            setattr(ult_modules, 'CoordAttYOLO', CoordAttYOLO)
+            ult_modules.__dict__['CoordAttYOLO'] = CoordAttYOLO
+
+            setattr(ult_tasks, 'CoordAttYOLO', CoordAttYOLO)
+            ult_tasks.__dict__['CoordAttYOLO'] = CoordAttYOLO
+            if hasattr(ult_tasks, 'parse_model'):
+                ult_tasks.parse_model.__globals__['CoordAttYOLO'] = CoordAttYOLO
         except Exception:
             pass
 
-        print("[CA] CoordAttYOLO berhasil didaftarkan ke Ultralytics registry.")
+        print("[CA] CoordAttYOLO berhasil didaftarkan ke PyTorch (torch.nn.CoordAttYOLO).")
         return True
 
     except Exception as e:
-        print(f"[CA][WARNING] Pendaftaran CA ke registry gagal: {e}")
+        print(f"[CA][WARNING] Pendaftaran CA gagal: {e}")
         return False
 
 
