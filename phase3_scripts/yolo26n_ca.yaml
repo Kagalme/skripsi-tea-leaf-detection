@@ -1,0 +1,79 @@
+# ============================================================
+# FASE 3: YOLO26n + Coordinate Attention (CA)
+# Model YAML untuk Ultralytics YOLO
+# ============================================================
+#
+# Modifikasi dari arsitektur YOLO26n nano (yolo26n.yaml):
+#   - Ditambahkan 3 blok CoordAttYOLO di backbone (setelah P3, P4, P5)
+#   - Posisi injeksi: setelah C2f terakhir masing-masing stage,
+#     sebelum feature masuk ke neck (PANet/FPN).
+#   - Channel-count TIDAK berubah (c2 = c1): zero-overhead residual.
+#
+# Referensi Paper:
+#   Hou, Q., Zhou, D., & Feng, J. (2021).
+#   Coordinate Attention for Efficient Mobile Network Design. CVPR 2021.
+#   https://arxiv.org/abs/2103.02907
+#
+# Posisi injeksi CA (rationale):
+#   1. Setelah backbone stage 3 (P3, stride=8): bantu deteksi bercak KECIL
+#      (Tea algal leaf spot, Red Spider) — recall rendah di baseline.
+#   2. Setelah backbone stage 4 (P4, stride=16): bantu medium-sized lesions
+#      (Brown Blight, Gray Blight, Helopeltis).
+#   3. Setelah backbone stage 5 (P5, stride=32): konteks objek besar
+#      (Green Mirid Bug, Healthy Leaf) — pertahankan performa tinggi.
+#
+# Cara penggunaan:
+#   >>> from phase3_scripts.ca_module import register_ca_module
+#   >>> register_ca_module()
+#   >>> model = YOLO('phase3_scripts/yolo26n_ca.yaml')
+#   >>> model.train(pretrained='yolo26n.pt', ...)
+# ============================================================
+
+# Jumlah kelas = 7 (dataset teh)
+nc: 7
+
+# Scaling factors (pertahankan persis sama dengan yolo26n.pt agar weight bisa di-load)
+scales:
+  n: [0.50, 0.25, 1024]   # depth, width, max_channels — identik yolo26n nano
+
+# ── BACKBONE ───────────────────────────────────────────────────────────────
+backbone:
+  # [from, repeats, module, args]
+  - [-1, 1, Conv, [64, 3, 2]]          # 0 - P1/2  | 416→208
+  - [-1, 1, Conv, [128, 3, 2]]         # 1 - P2/4  | 208→104
+  - [-1, 3, C2f,  [128, True]]         # 2
+  - [-1, 1, Conv, [256, 3, 2]]         # 3 - P3/8  | 104→52
+  - [-1, 6, C2f,  [256, True]]         # 4
+  # ► CA-1: Coordinate Attention di P3 (small-object detector)
+  - [-1, 1, CoordAttYOLO, [256, 32]]   # 5  ← CA block (c1=256, reduction=32)
+  - [-1, 1, Conv, [512, 3, 2]]         # 6 - P4/16 | 52→26
+  - [-1, 6, C2f,  [512, True]]         # 7
+  # ► CA-2: Coordinate Attention di P4 (medium-object detector)
+  - [-1, 1, CoordAttYOLO, [512, 32]]   # 8  ← CA block (c1=512, reduction=32)
+  - [-1, 1, Conv, [1024, 3, 2]]        # 9 - P5/32 | 26→13
+  - [-1, 3, C2f,  [1024, True]]        # 10
+  # ► CA-3: Coordinate Attention di P5 (large-object / context)
+  - [-1, 1, CoordAttYOLO, [1024, 32]]  # 11 ← CA block (c1=1024, reduction=32)
+  - [-1, 1, SPPF, [1024, 5]]           # 12
+
+# ── NECK (PANet / FPN) ─────────────────────────────────────────────────────
+# Neck tidak dimodifikasi — identik yolo26n untuk fair comparison
+head:
+  - [-1, 1, nn.Upsample, [None, 2, 'nearest']]  # 13
+  - [[-1, 8], 1, Concat, [1]]                    # 14  cat backbone P4 (CA output)
+  - [-1, 3, C2f, [512]]                          # 15
+
+  - [-1, 1, nn.Upsample, [None, 2, 'nearest']]  # 16
+  - [[-1, 5], 1, Concat, [1]]                    # 17  cat backbone P3 (CA output)
+  - [-1, 3, C2f, [256]]                          # 18  P3/8-small
+
+  - [-1, 1, Conv, [256, 3, 2]]                   # 19
+  - [[-1, 15], 1, Concat, [1]]                   # 20  cat head P4
+  - [-1, 3, C2f, [512]]                          # 21  P4/16-medium
+
+  - [-1, 1, Conv, [512, 3, 2]]                   # 22
+  - [[-1, 12], 1, Concat, [1]]                   # 23  cat head P5 (SPPF output)
+  - [-1, 3, C2f, [1024]]                         # 24  P5/32-large
+
+  # Detection head (anchor-free, decoupled)
+  - [[18, 21, 24], 1, Detect, [nc]]              # 25 - Detect (P3, P4, P5)

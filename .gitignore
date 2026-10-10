@@ -9,6 +9,7 @@ teaLeafBD/
 # OUTPUT TRAINING & CHECKPOINTS
 # ==========================================
 phase2_runs/
+phase3_runs/
 *.pth
 *.pt
 !model_selection/yolo26n.pt
