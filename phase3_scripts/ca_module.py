@@ -118,35 +118,79 @@ class CoordAttYOLO(CoordAtt):
 
 def register_ca_module():
     """
-    Daftarkan CoordAttYOLO ke dalam namespace PyTorch (torch.nn) dan Ultralytics
-    secara murni di memori (in-memory), TANPA memodifikasi berkas pustaka di disk.
-
-    Karena arsitektur YAML menggunakan 'nn.CoordAttYOLO', Ultralytics secara
-    native memanggil getattr(torch.nn, 'CoordAttYOLO') tanpa menimbulkan KeyError
-    atau SyntaxError.
+    Daftarkan CoordAttYOLO ke dalam namespace PyTorch (torch.nn) dan Ultralytics.
+    Di Colab, secara otomatis menambahkan definisi kelas ke bagian akhir berkas
+    ultralytics/nn/tasks.py (mode append), sehingga 100% aman dari SyntaxError
+    dan langsung dikenali oleh globals() parse_model.
     """
     try:
+        import os
         import torch.nn as nn
+        import ultralytics.nn.modules as ult_modules
+        import ultralytics.nn.tasks as ult_tasks
 
-        # 1. Daftarkan ke torch.nn (Standar resmi PyTorch / Ultralytics)
+        # 1. Daftarkan di memori Python aktif
         setattr(nn, 'CoordAttYOLO', CoordAttYOLO)
+        setattr(ult_modules, 'CoordAttYOLO', CoordAttYOLO)
+        setattr(ult_tasks, 'CoordAttYOLO', CoordAttYOLO)
+        ult_tasks.__dict__['CoordAttYOLO'] = CoordAttYOLO
+        if hasattr(ult_tasks, 'parse_model'):
+            ult_tasks.parse_model.__globals__['CoordAttYOLO'] = CoordAttYOLO
 
-        # 2. Daftarkan juga ke namespace Ultralytics untuk kompatibilitas ganda
+        # 2. Append ke AKHIR berkas tasks.py jika writable (di Colab)
         try:
-            import ultralytics.nn.modules as ult_modules
-            import ultralytics.nn.tasks as ult_tasks
+            tasks_file = getattr(ult_tasks, '__file__', None)
+            if tasks_file and os.path.exists(tasks_file):
+                with open(tasks_file, 'r', encoding='utf-8') as f:
+                    txt = f.read()
+                if 'class CoordAttYOLO' not in txt:
+                    appendix = """
 
-            setattr(ult_modules, 'CoordAttYOLO', CoordAttYOLO)
-            ult_modules.__dict__['CoordAttYOLO'] = CoordAttYOLO
+# ==============================================================================
+# FASE 3: Coordinate Attention (CA)
+# ==============================================================================
+class CoordAtt(nn.Module):
+    def __init__(self, inp: int, oup: int, reduction: int = 32):
+        super().__init__()
+        mip = max(8, inp // reduction)
+        self.conv1 = nn.Conv2d(inp, mip, kernel_size=1, stride=1, padding=0)
+        self.bn1   = nn.BatchNorm2d(mip)
+        self.act   = nn.Hardswish()
+        self.conv_h = nn.Conv2d(mip, oup, kernel_size=1, stride=1, padding=0)
+        self.conv_w = nn.Conv2d(mip, oup, kernel_size=1, stride=1, padding=0)
 
-            setattr(ult_tasks, 'CoordAttYOLO', CoordAttYOLO)
-            ult_tasks.__dict__['CoordAttYOLO'] = CoordAttYOLO
-            if hasattr(ult_tasks, 'parse_model'):
-                ult_tasks.parse_model.__globals__['CoordAttYOLO'] = CoordAttYOLO
+    def forward(self, x):
+        identity = x
+        n, c, h, w = x.shape
+        x_h = F.adaptive_avg_pool2d(x, (h, 1))
+        x_w = F.adaptive_avg_pool2d(x, (1, w)).permute(0, 1, 3, 2)
+        y = torch.cat([x_h, x_w], dim=2)
+        y = self.act(self.bn1(self.conv1(y)))
+        x_h_enc, x_w_enc = torch.split(y, [h, w], dim=2)
+        x_w_enc = x_w_enc.permute(0, 1, 3, 2)
+        a_h = self.conv_h(x_h_enc).sigmoid()
+        a_w = self.conv_w(x_w_enc).sigmoid()
+        return identity * a_h * a_w
+
+class CoordAttYOLO(CoordAtt):
+    def __init__(self, c1: int, c2: int = None, reduction: int = 32, *args, **kwargs):
+        if c2 is not None and c2 <= 64 and (reduction == 32 or reduction is None):
+            actual_reduction = c2
+            actual_c2 = c1
+        else:
+            actual_c2 = c2 or c1
+            actual_reduction = reduction or 32
+        super().__init__(inp=c1, oup=actual_c2, reduction=actual_reduction)
+        self.c1 = c1
+        self.c2 = actual_c2
+"""
+                    with open(tasks_file, 'a', encoding='utf-8') as f:
+                        f.write(appendix)
+                    print("[CA] Berhasil menambahkan CoordAttYOLO ke berkas tasks.py.")
         except Exception:
             pass
 
-        print("[CA] CoordAttYOLO berhasil didaftarkan ke PyTorch (torch.nn.CoordAttYOLO).")
+        print("[CA] CoordAttYOLO berhasil didaftarkan ke PyTorch & Ultralytics.")
         return True
 
     except Exception as e:
