@@ -35,8 +35,8 @@ for root, dirs, files in os.walk(PHASE3_DIR):
         if Path(f).suffix in EXCLUDE_EXTS:
             continue
         full_path = os.path.join(root, f)
-        # Arsip relatif terhadap SCRIPT_DIR agar di Colab jadi /content/phase3_scripts/
-        arcname = os.path.relpath(full_path, SCRIPT_DIR)
+        # Arsip relatif terhadap SCRIPT_DIR dengan pemisah '/' standar Linux
+        arcname = os.path.relpath(full_path, SCRIPT_DIR).replace('\\', '/')
         file_list.append((full_path, arcname))
 
 print(f"\nMenambahkan {len(file_list)} berkas ke ZIP...\n")
