@@ -41,6 +41,15 @@ args = parser.parse_args()
 if os.path.exists("/content/tea_yolo"):
     DATA_YAML   = "/content/tea_yolo/data.yaml"
     RUNS_DIR    = "/content/phase3_runs"
+    try:
+        with open(DATA_YAML, "r", encoding="utf-8") as f:
+            y_text = f.read()
+        if "D:/SKRIPSI/tea_yolo" in y_text or "D:\\" in y_text:
+            y_text = y_text.replace("D:/SKRIPSI/tea_yolo", "/content/tea_yolo").replace("D:\\SKRIPSI\\tea_yolo", "/content/tea_yolo")
+            with open(DATA_YAML, "w", encoding="utf-8") as f:
+                f.write(y_text)
+    except Exception:
+        pass
 else:
     DATA_YAML   = os.path.join(PROJECT_DIR, "tea_yolo", "data.yaml")
     RUNS_DIR    = os.path.join(PROJECT_DIR, "phase3_runs")

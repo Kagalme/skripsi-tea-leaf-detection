@@ -55,6 +55,18 @@ if os.path.exists("/content/tea_yolo"):
     PRETRAINED   = "/content/yolo26n.pt"
     MODEL_YAML   = "/content/phase3_scripts/yolo26n_ca.yaml"
     RUNS_DIR     = "/content/phase3_runs"
+
+    # Otomatis sesuaikan path Windows ke path Linux Colab
+    try:
+        with open(DATA_YAML, "r", encoding="utf-8") as f:
+            y_text = f.read()
+        if "D:/SKRIPSI/tea_yolo" in y_text or "D:\\" in y_text:
+            y_text = y_text.replace("D:/SKRIPSI/tea_yolo", "/content/tea_yolo").replace("D:\\SKRIPSI\\tea_yolo", "/content/tea_yolo")
+            with open(DATA_YAML, "w", encoding="utf-8") as f:
+                f.write(y_text)
+            print("[INFO] Path di data.yaml disesuaikan ke /content/tea_yolo")
+    except Exception as e:
+        print(f"[WARNING] Gagal menyesuaikan path data.yaml: {e}")
 else:
     DATA_YAML    = os.path.join(PROJECT_DIR, "tea_yolo", "data.yaml")
     PRETRAINED   = os.path.join(PROJECT_DIR, "yolo26n.pt")

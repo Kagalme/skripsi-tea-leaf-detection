@@ -41,23 +41,33 @@ class CoordAtt(nn.Module):
         returns : Tensor [B, C, H, W] (re-calibrated feature map)
     """
 
-    def __init__(self, inp: int, oup: int, reduction: int = 32):
+    def __init__(self, inp: int = None, oup: int = None, reduction: int = 32):
         super().__init__()
-        # Dimensi bottleneck — minimal 8 channel agar tidak terlalu kecil
-        mip = max(8, inp // reduction)
+        self.reduction = reduction
+        self.act   = nn.Hardswish()
+        self.conv1 = None
+        self.bn1   = None
+        self.conv_h = None
+        self.conv_w = None
+        if inp is not None:
+            self._init_layers(inp, oup or inp)
 
-        # Shared MLP: Conv 1×1 → BN → Hardswish (ringan, cocok mobile)
+    def _init_layers(self, inp: int, oup: int):
+        mip = max(8, inp // self.reduction)
         self.conv1 = nn.Conv2d(inp, mip, kernel_size=1, stride=1, padding=0)
         self.bn1   = nn.BatchNorm2d(mip)
-        self.act   = nn.Hardswish()
-
-        # Branch h (output horizontal attention), w (output vertikal attention)
         self.conv_h = nn.Conv2d(mip, oup, kernel_size=1, stride=1, padding=0)
         self.conv_w = nn.Conv2d(mip, oup, kernel_size=1, stride=1, padding=0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         identity = x
         B, C, H, W = x.shape
+
+        # Otomatis inisialisasi / adaptasi channel sesuai dimensi aktual feature map
+        # (Sangat penting saat menggunakan scaling factor YOLO nano width=0.25)
+        if self.conv1 is None or self.conv1.in_channels != C:
+            self._init_layers(C, C)
+            self.to(device=x.device, dtype=x.dtype)
 
         # 1. Horizontal global average pooling: [B, C, H, 1]
         x_h = F.adaptive_avg_pool2d(x, (H, 1))
@@ -88,32 +98,26 @@ class CoordAtt(nn.Module):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Wrapper yang kompatibel dengan format argumen Ultralytics YAML
-# Ultralytics memparsing args dari YAML sebagai daftar positional args:
-#   CoordAtt: [<out_channels>, <reduction>]
 # ─────────────────────────────────────────────────────────────────────────────
 
 class CoordAttYOLO(CoordAtt):
     """
     Wrapper agar CoordAtt dapat diparsing oleh Ultralytics YAML builder.
-
-    Mendukung pemanggilan:
-      - CoordAttYOLO(c1, reduction=32)
-      - CoordAttYOLO(c1, c2, reduction=32)
-      - Dari YAML via [c1, reduction] atau [reduction]
+    Mendukung berbagai format pemanggilan dan scaling factor YOLO nano/small.
     """
 
-    def __init__(self, c1: int, c2: int = None, reduction: int = 32, *args, **kwargs):
-        # Jika c2 adalah reduction ratio (misalnya [256, 32] dari YAML di mana 32 adalah reduction):
-        if c2 is not None and c2 <= 64 and (reduction == 32 or reduction is None):
-            actual_reduction = c2
-            actual_c2 = c1
-        else:
-            actual_c2 = c2 or c1
-            actual_reduction = reduction or 32
-
-        super().__init__(inp=c1, oup=actual_c2, reduction=actual_reduction)
-        self.c1 = c1
-        self.c2 = actual_c2
+    def __init__(self, *args, **kwargs):
+        reduction = 32
+        inp = None
+        for a in args:
+            if isinstance(a, int):
+                if a <= 64:
+                    reduction = a
+                else:
+                    inp = a
+        if "reduction" in kwargs:
+            reduction = kwargs["reduction"]
+        super().__init__(inp=inp, oup=inp, reduction=reduction)
 
 
 def register_ca_module():
@@ -150,18 +154,30 @@ def register_ca_module():
 # FASE 3: Coordinate Attention (CA)
 # ==============================================================================
 class CoordAtt(nn.Module):
-    def __init__(self, inp: int, oup: int, reduction: int = 32):
+    def __init__(self, inp: int = None, oup: int = None, reduction: int = 32):
         super().__init__()
-        mip = max(8, inp // reduction)
+        self.reduction = reduction
+        self.act   = nn.Hardswish()
+        self.conv1 = None
+        self.bn1   = None
+        self.conv_h = None
+        self.conv_w = None
+        if inp is not None:
+            self._init_layers(inp, oup or inp)
+
+    def _init_layers(self, inp: int, oup: int):
+        mip = max(8, inp // self.reduction)
         self.conv1 = nn.Conv2d(inp, mip, kernel_size=1, stride=1, padding=0)
         self.bn1   = nn.BatchNorm2d(mip)
-        self.act   = nn.Hardswish()
         self.conv_h = nn.Conv2d(mip, oup, kernel_size=1, stride=1, padding=0)
         self.conv_w = nn.Conv2d(mip, oup, kernel_size=1, stride=1, padding=0)
 
     def forward(self, x):
         identity = x
         n, c, h, w = x.shape
+        if self.conv1 is None or self.conv1.in_channels != c:
+            self._init_layers(c, c)
+            self.to(device=x.device, dtype=x.dtype)
         x_h = F.adaptive_avg_pool2d(x, (h, 1))
         x_w = F.adaptive_avg_pool2d(x, (1, w)).permute(0, 1, 3, 2)
         y = torch.cat([x_h, x_w], dim=2)
@@ -173,16 +189,18 @@ class CoordAtt(nn.Module):
         return identity * a_h * a_w
 
 class CoordAttYOLO(CoordAtt):
-    def __init__(self, c1: int, c2: int = None, reduction: int = 32, *args, **kwargs):
-        if c2 is not None and c2 <= 64 and (reduction == 32 or reduction is None):
-            actual_reduction = c2
-            actual_c2 = c1
-        else:
-            actual_c2 = c2 or c1
-            actual_reduction = reduction or 32
-        super().__init__(inp=c1, oup=actual_c2, reduction=actual_reduction)
-        self.c1 = c1
-        self.c2 = actual_c2
+    def __init__(self, *args, **kwargs):
+        reduction = 32
+        inp = None
+        for a in args:
+            if isinstance(a, int):
+                if a <= 64:
+                    reduction = a
+                else:
+                    inp = a
+        if "reduction" in kwargs:
+            reduction = kwargs["reduction"]
+        super().__init__(inp=inp, oup=inp, reduction=reduction)
 """
                     with open(tasks_file, 'a', encoding='utf-8') as f:
                         f.write(appendix)
