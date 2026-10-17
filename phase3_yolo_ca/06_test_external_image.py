@@ -90,16 +90,14 @@ def test_external_image(
     print(f"[INFO] Menjalankan deteksi YOLO26n+CA + Filter Ranting (device={device})...")
 
     config = EdgeContourConfig(
-        canny_low=35,
-        canny_high=105,
+        canny_low=30,
+        canny_high=100,
         morph_close_ksize=7,
         border_margin=6,
-        min_solidity=0.56,
-        max_aspect_ratio=3.8,
+        min_solidity=0.50,
+        max_aspect_ratio=4.2,
         filter_twigs=True,
         filter_dof_blur=True,
-        min_relative_sharpness=0.48,
-        min_leaf_purity=0.70,
         only_diseased_in_field=False,  # Multi-deteksi: tampilkan semua daun fokus tajam (Sakit + Sehat)
         fallback_to_bbox=False,
     )
