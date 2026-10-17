@@ -111,12 +111,28 @@ class CoordAttYOLO(CoordAtt):
 
 def register_ca_module() -> bool:
     """
-    Mendaftarkan CoordAttYOLO ke dalam namespace PyTorch (torch.nn) dan Ultralytics
-    serta menyisipkannya ke ultralytics/nn/tasks.py jika diperlukan.
+    Mendaftarkan CoordAttYOLO ke dalam namespace PyTorch (torch.nn), Ultralytics,
+    serta sys.modules lintas nama paket (`phase3_yolo_ca`, `phase3_yolo_ca_finetune`,
+    `phase3_scripts`) agar `torch.load()` dapat memuat `best.pt` dari folder mana pun
+    tanpa terkena `ModuleNotFoundError: No module named 'phase3_yolo_ca'`.
     """
     try:
+        import sys
+        import types
         import ultralytics.nn.modules as ult_modules
         import ultralytics.nn.tasks as ult_tasks
+
+        # Daftarkan alias modul di sys.modules agar pickle/torch.load selalu mengenali
+        # objek CoordAtt & CoordAttYOLO yang disimpan dari phase3_yolo_ca maupun phase3_scripts
+        current_mod = sys.modules[__name__]
+        for alias_pkg in ("phase3_yolo_ca", "phase3_yolo_ca_finetune", "phase3_scripts"):
+            if alias_pkg not in sys.modules:
+                pkg_obj = types.ModuleType(alias_pkg)
+                pkg_obj.ca_module = current_mod
+                sys.modules[alias_pkg] = pkg_obj
+            else:
+                setattr(sys.modules[alias_pkg], "ca_module", current_mod)
+            sys.modules[f"{alias_pkg}.ca_module"] = current_mod
 
         setattr(nn, "CoordAtt", CoordAtt)
         setattr(nn, "CoordAttYOLO", CoordAttYOLO)

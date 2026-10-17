@@ -125,8 +125,20 @@ def register_ca_module() -> bool:
     DataLoader / DDP di Colab juga mengenali modul CoordAttYOLO).
     """
     try:
+        import sys
+        import types
         import ultralytics.nn.modules as ult_modules
         import ultralytics.nn.tasks as ult_tasks
+
+        current_mod = sys.modules[__name__]
+        for alias_pkg in ("phase3_yolo_ca", "phase3_yolo_ca_finetune", "phase3_scripts"):
+            if alias_pkg not in sys.modules:
+                pkg_obj = types.ModuleType(alias_pkg)
+                pkg_obj.ca_module = current_mod
+                sys.modules[alias_pkg] = pkg_obj
+            else:
+                setattr(sys.modules[alias_pkg], "ca_module", current_mod)
+            sys.modules[f"{alias_pkg}.ca_module"] = current_mod
 
         # 1. Daftarkan di memori Python aktif
         setattr(nn, "CoordAtt", CoordAtt)
