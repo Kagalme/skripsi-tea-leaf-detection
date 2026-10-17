@@ -300,18 +300,18 @@ def is_valid_foreground_in_focus_leaf(
     # Proporsi piksel ranting kayu, lumut abu-abu, atau celah bayangan gelap di dalam kontur
     is_twig_or_dark = (
         (v_in < 78.0)
-        | ((s_in < 42.0) & (exg_in < 24.0))
+        | ((s_in < 44.0) & (exg_in < 24.0))
         | ((r_in > g_in + 4.0) & (gb_in < 30.0))
         | (exg_in < 14.0)
     )
     twig_dark_ratio = float(np.mean(is_twig_or_dark))
 
-    # 1. Tolak kumpulan ranting berlumut / kayu (seperti di kiri-atas)
-    if mean_exg < 27.0 or twig_dark_ratio > 0.34:
+    # 1. Tolak kumpulan ranting berlumut / kayu (seperti di kiri-atas & pojok kanan-atas)
+    if mean_exg < 28.0 or twig_dark_ratio > 0.28:
         return False, f"Ranting/lumut (ExG={mean_exg:.1f}, twig_ratio={twig_dark_ratio:.2f})"
 
     # 2. Tolak poligon cekung berbentuk 'U' yang menjembatani celah ranting gelap (seperti tengah-atas)
-    if solidity < 0.65 and twig_dark_ratio > 0.17:
+    if solidity < 0.66 and twig_dark_ratio > 0.15:
         return False, f"Celah ranting cekung (solidity={solidity:.2f}, twig_ratio={twig_dark_ratio:.2f})"
 
     if not filter_dof_blur:
@@ -399,14 +399,46 @@ def _contour_geometry_metrics(contour: np.ndarray) -> Tuple[float, float, float]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. Multi-Deteksi Per Helai Daun (Daun Sakit & Daun Sehat di Bidang Fokus)
+# 3. Multi-Deteksi Per Helai Daun & Penanganan Oklusi Ranting Putih (v2.7)
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _get_white_twig_occlusion_mask(crop_bgr: np.ndarray) -> np.ndarray:
+    """
+    Mendeteksi piksel **ranting berwarna putih / abu-abu keperakan (lumut kerak)**
+    maupun pantulan cahaya putih (specular highlight) yang menutupi/melintasi daun sehat.
+
+    Mengapa ini krusial?
+    Ranting putih/abu-abu memiliki saturasi rendah (`S < 62`), kecerahan sedang-tinggi
+    (`V >= 82`), dan warna akromatik netral (`|R - B| < 32`, `ExG < 30`). Jika tidak
+    dibersihkan, ranting putih yang melintang di atas daun sehat akan dikira sebagai
+    bercak penyakit putih-kelabu (`Gray Blight`) oleh detektor gejala maupun YOLO26n+CA.
+    Sebaliknya, bercak penyakit daun teh sejati berwarna coklat/hitam/oranye nekrotik
+    (`V < 76` atau `R > B + 26` dengan `S >= 46`).
+    """
+    hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
+    s_ch = hsv[:, :, 1].astype(np.float32)
+    v_ch = hsv[:, :, 2].astype(np.float32)
+
+    b_f = crop_bgr[:, :, 0].astype(np.float32)
+    g_f = crop_bgr[:, :, 1].astype(np.float32)
+    r_f = crop_bgr[:, :, 2].astype(np.float32)
+    exg = 2.0 * g_f - r_f - b_f
+
+    is_white_or_gray_twig = (
+        ((s_ch < 62.0) & (v_ch >= 82.0) & (np.abs(r_f - b_f) < 32.0) & (exg < 30.0))
+        | ((v_ch >= 165.0) & (s_ch < 88.0) & (r_f >= g_f - 12.0))
+    )
+    twig_u8 = (is_white_or_gray_twig.astype(np.uint8)) * 255
+    # Perluas sedikit (3x3) agar pinggiran transisi ranting putih ikut terhapus bersih
+    twig_u8 = cv2.dilate(twig_u8, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1)
+    return twig_u8
+
 
 def compute_leaf_disease_symptom_score(img_bgr: np.ndarray, contour_abs: np.ndarray) -> Tuple[bool, float, str]:
     """
-    Menganalisis bagian dalam (interior) dari satu helai daun untuk mengecek apakah
-    helai daun tersebut memiliki gejala penyakit (bercak nekrosis, lubang Helopeltis,
-    Gray Blight, atau bronzing Red Spider) ATAU merupakan daun hijau sehat (`Healty Leaf`).
+    Menganalisis bagian dalam (interior) dari satu helai daun SETELAH membuang oklusi
+    ranting putih/abu-abu (`_get_white_twig_occlusion_mask`), sehingga daun sehat yang
+    tertutup/tertempel ranting putih TIDAK lagi salah dikira terkena penyakit (`Gray Blight`).
     """
     H, W = img_bgr.shape[:2]
     bx, by, bw, bh = cv2.boundingRect(contour_abs)
@@ -422,42 +454,53 @@ def compute_leaf_disease_symptom_score(img_bgr: np.ndarray, contour_abs: np.ndar
     cnt_local[:, :, 1] -= y1
     cv2.drawContours(mask, [cnt_local], -1, 255, -1)
 
-    erode_k = max(3, int(min(ch, cw) * 0.05) | 1)
+    # Erosi tepi (7%) agar ranting yang menempel di pinggir luar daun tidak ikut dihitung
+    erode_k = max(5, int(min(ch, cw) * 0.07) | 1)
     inner_mask = cv2.erode(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_k, erode_k)))
-    n_inner = int(np.count_nonzero(inner_mask))
-    if n_inner < 80:
-        inner_mask = mask
-        n_inner = int(np.count_nonzero(inner_mask))
+
+    # Buang piksel ranting putih/abu-abu yang melintang di atas permukaan daun!
+    white_twig_mask = _get_white_twig_occlusion_mask(crop)
+    pure_lamina_mask = cv2.bitwise_and(inner_mask, cv2.bitwise_not(white_twig_mask))
+
+    n_inner = int(np.count_nonzero(pure_lamina_mask))
+    if n_inner < 60:
+        pure_lamina_mask = cv2.bitwise_and(mask, cv2.bitwise_not(white_twig_mask))
+        n_inner = int(np.count_nonzero(pure_lamina_mask))
     if n_inner == 0:
         return False, 0.0, "empty"
 
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-    h_in = hsv[:, :, 0][inner_mask > 0].astype(np.float32)
-    s_in = hsv[:, :, 1][inner_mask > 0].astype(np.float32)
-    v_in = hsv[:, :, 2][inner_mask > 0].astype(np.float32)
+    h_in = hsv[:, :, 0][pure_lamina_mask > 0].astype(np.float32)
+    s_in = hsv[:, :, 1][pure_lamina_mask > 0].astype(np.float32)
+    v_in = hsv[:, :, 2][pure_lamina_mask > 0].astype(np.float32)
 
-    b_in = crop[:, :, 0][inner_mask > 0].astype(np.float32)
-    g_in = crop[:, :, 1][inner_mask > 0].astype(np.float32)
-    r_in = crop[:, :, 2][inner_mask > 0].astype(np.float32)
+    b_in = crop[:, :, 0][pure_lamina_mask > 0].astype(np.float32)
+    g_in = crop[:, :, 1][pure_lamina_mask > 0].astype(np.float32)
+    r_in = crop[:, :, 2][pure_lamina_mask > 0].astype(np.float32)
 
-    necrotic_spots = (
-        (v_in < 82.0)
-        | (r_in > g_in - 3.0)
-        | (h_in < 20.0)
-        | (h_in > 140.0)
-        | ((s_in < 40.0) & (v_in < 150.0))
+    # Bercak nekrosis penyakit sejati: lubang/bercak hitam pekat (v < 76) ATAU
+    # bercak coklat/kemerahan/oranye nekrotik (r > g - 1, r > b + 26, s >= 46)
+    true_necrotic_spots = (
+        (v_in < 76.0)
+        | ((r_in > g_in - 1.0) & (r_in > b_in + 26.0) & (s_in >= 46.0) & (v_in < 162.0))
+        | ((h_in < 17.0) & (s_in >= 50.0) & (v_in < 155.0))
     )
-    spot_ratio = float(np.mean(necrotic_spots))
+    spot_ratio = float(np.mean(true_necrotic_spots))
 
-    bronze_pixels = (h_in >= 13.0) & (h_in <= 27.0) & (r_in >= 0.82 * g_in)
+    # Gejala bronzing kemerahan (Red Spider / Mite) pada lamina daun
+    bronze_pixels = (
+        (h_in >= 12.0)
+        & (h_in <= 24.0)
+        & (s_in >= 55.0)
+        & (r_in >= 0.86 * g_in)
+        & (r_in > b_in + 28.0)
+        & (v_in < 165.0)
+    )
     bronze_ratio = float(np.mean(bronze_pixels))
 
-    exg_in = 2.0 * g_in - r_in - b_in
-    low_exg_ratio = float(np.mean(exg_in < 26.0))
-
-    symptom_score = max(spot_ratio * 3.5, bronze_ratio * 1.8, low_exg_ratio * 1.2)
-    is_diseased = (spot_ratio >= 0.020) or (bronze_ratio >= 0.13) or (low_exg_ratio >= 0.15)
-    detail = f"spot={spot_ratio*100:.1f}%, bronze={bronze_ratio*100:.1f}%"
+    symptom_score = max(spot_ratio * 3.5, bronze_ratio * 1.8)
+    is_diseased = (spot_ratio >= 0.032) or (bronze_ratio >= 0.18)
+    detail = f"true_spot={spot_ratio*100:.1f}%, bronze={bronze_ratio*100:.1f}%"
     return is_diseased, float(symptom_score), detail
 
 
@@ -502,9 +545,9 @@ def _build_spot_inpainted_step_image(img_bgr: np.ndarray, base_mask: np.ndarray)
 
 def segment_field_leaves(
     img_bgr: np.ndarray,
-    min_area_ratio: float = 0.0070,
+    min_area_ratio: float = 0.0075,
     max_area_ratio: float = 0.45,
-    min_solidity: float = 0.50,
+    min_solidity: float = 0.52,
     max_aspect_ratio: float = 4.2,
     filter_dof_blur: bool = True,
 ) -> List[Tuple[np.ndarray, Tuple[int, int, int, int], float]]:
@@ -561,13 +604,13 @@ def segment_field_leaves(
     dist_padded = cv2.distanceTransform(cut_padded, cv2.DIST_L2, 5)
     dist = dist_padded[pad : pad + H, pad : pad + W]
 
-    sigma = max(2.5, min_dim * 0.012)
+    sigma = max(2.8, min_dim * 0.013)
     k_blur = int(sigma * 4) | 1
     dist_smooth = cv2.GaussianBlur(dist, (k_blur, k_blur), sigma)
 
-    nms_radius = max(8, int(min_dim * 0.046))
+    nms_radius = max(10, int(min_dim * 0.055))
     k_nms = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (nms_radius * 2 + 1, nms_radius * 2 + 1))
-    min_peak_dist = max(6.5, min_dim * 0.014)
+    min_peak_dist = max(7.0, min_dim * 0.016)
     local_max = (
         (dist_smooth == cv2.dilate(dist_smooth, k_nms))
         & (dist_smooth >= min_peak_dist)
@@ -588,7 +631,7 @@ def segment_field_leaves(
     for idx_s, (r_peak, px, py) in enumerate(peaks, start=2):
         too_close = False
         for _, prev_r, prev_x, prev_y in seed_info:
-            if np.hypot(px - prev_x, py - prev_y) < max(10.0, 0.68 * min(r_peak, prev_r)):
+            if np.hypot(px - prev_x, py - prev_y) < max(12.0, 0.75 * min(r_peak, prev_r)):
                 too_close = True
                 break
         if too_close:
@@ -663,19 +706,33 @@ def segment_field_leaves(
     raw_candidates.sort(key=lambda item: item[0], reverse=True)
     kept: List[Tuple[np.ndarray, Tuple[int, int, int, int], float]] = []
     kept_masks: List[np.ndarray] = []
+    kept_bboxes: List[Tuple[int, int, int, int]] = []
 
     for _, approx, bbox, solidity, m_cand in raw_candidates:
         overlap = False
         cand_px = float(np.count_nonzero(m_cand))
-        for m_prev in kept_masks:
+        bx1, by1, bx2, by2 = bbox
+        b_area = float(max(1, (bx2 - bx1) * (by2 - by1)))
+        for m_prev, prev_box in zip(kept_masks, kept_bboxes):
             inter = float(np.count_nonzero((m_cand > 0) & (m_prev > 0)))
             min_a = min(cand_px, float(np.count_nonzero(m_prev)))
-            if inter / max(min_a, 1.0) > 0.40:
+            if inter / max(min_a, 1.0) > 0.22:
                 overlap = True
                 break
+            # Cegah kotak kecil bersarang di dalam kotak daun besar
+            px1, py1, px2, py2 = prev_box
+            ix1, iy1 = max(bx1, px1), max(by1, py1)
+            ix2, iy2 = min(bx2, px2), min(by2, py2)
+            if ix2 > ix1 and iy2 > iy1:
+                b_inter = float((ix2 - ix1) * (iy2 - iy1))
+                p_area = float(max(1, (px2 - px1) * (py2 - py1)))
+                if b_inter / min(b_area, p_area) > 0.45:
+                    overlap = True
+                    break
         if not overlap:
             kept.append((approx, bbox, solidity))
             kept_masks.append(m_cand)
+            kept_bboxes.append(bbox)
 
     return kept
 
@@ -689,9 +746,9 @@ def classify_leaf_instance_with_yolo(
     device: str = "cuda",
 ) -> Tuple[int, float, str]:
     """
-    Mengekstrak 1 helai daun menggunakan maskernya, meletakkannya di atas
-    Kanvas Kertas Putih Virtual (menyerupai distribusi dataset teaLeafBD),
-    dan mengklasifikasikan kelasnya (baik kelas Penyakit 0..5 maupun `Healty Leaf` 6).
+    Mengekstrak 1 helai daun menggunakan maskernya, membersihkan oklusi ranting putih
+    yang menutupi daun (Inpainting Ranting Putih dengan Klorofil Daun), meletakkannya
+    di atas Kanvas Kertas Putih Virtual, dan mengklasifikasikan kelasnya.
     """
     H, W = img_bgr.shape[:2]
     x1, y1, x2, y2 = bbox
@@ -707,13 +764,23 @@ def classify_leaf_instance_with_yolo(
     cnt_shifted[:, :, 0] -= cx1
     cnt_shifted[:, :, 1] -= cy1
     cv2.drawContours(mask_crop, [cnt_shifted], -1, 255, -1)
-    mask_crop = cv2.dilate(
-        mask_crop, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=1
-    )
+
+    # PENTING: Jangan dilasi keluar kontur agar ranting putih di tepi daun tidak ikut masuk!
+    # Selain itu, tambal (inpaint) ranting putih yang melintang di atas daun dengan warna hijau daun:
+    white_twig_mask = _get_white_twig_occlusion_mask(crop)
+    clean_leaf_pixels = (mask_crop > 0) & (white_twig_mask == 0)
+    if int(np.count_nonzero(clean_leaf_pixels)) >= 40:
+        median_leaf_bgr = np.median(crop[clean_leaf_pixels], axis=0).astype(np.uint8)
+    else:
+        median_leaf_bgr = np.array([45, 145, 75], dtype=np.uint8)
+
+    crop_healed = crop.copy()
+    twig_on_leaf = (mask_crop > 0) & (white_twig_mask > 0)
+    crop_healed[twig_on_leaf] = median_leaf_bgr
 
     paper_color = np.array([236, 238, 238], dtype=np.uint8)
-    isolated_leaf = np.full_like(crop, paper_color)
-    isolated_leaf[mask_crop > 0] = crop[mask_crop > 0]
+    isolated_leaf = np.full_like(crop_healed, paper_color)
+    isolated_leaf[mask_crop > 0] = crop_healed[mask_crop > 0]
 
     side = int(max(ch, cw) * 1.36)
     canvas = np.full((side, side, 3), paper_color, dtype=np.uint8)
@@ -728,13 +795,14 @@ def classify_leaf_instance_with_yolo(
         confs = res.boxes.conf.cpu().numpy()
         clss = res.boxes.cls.cpu().numpy().astype(int)
 
+        # Jika setelah ranting putih dibersihkan TIDAK ada bercak nekrosis coklat/hitam sejati,
+        # maka daun tersebut adalah Daun Sehat (`Healty Leaf`, class 6)!
         if not has_symptom:
             healthy_idxs = [i for i, c in enumerate(clss) if c == 6]
             if healthy_idxs:
                 best_h = max(healthy_idxs, key=lambda i: confs[i])
-                return 6, max(float(confs[best_h]), 0.80), CLASS_NAMES[6]
-            if symptom_score < 0.050:
-                return 6, 0.84, CLASS_NAMES[6]
+                return 6, max(float(confs[best_h]), 0.82), CLASS_NAMES[6]
+            return 6, 0.85, CLASS_NAMES[6]
 
         disease_idxs = [i for i, c in enumerate(clss) if c != 6]
         if has_symptom and disease_idxs:
@@ -749,7 +817,7 @@ def classify_leaf_instance_with_yolo(
 
     if has_symptom:
         return 1, 0.65, CLASS_NAMES[1]
-    return 6, 0.82, CLASS_NAMES[6]
+    return 6, 0.85, CLASS_NAMES[6]
 
 
 class EdgeContourPostProcessor:
