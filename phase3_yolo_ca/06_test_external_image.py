@@ -90,14 +90,17 @@ def test_external_image(
     print(f"[INFO] Menjalankan deteksi YOLO26n+CA + Filter Ranting (device={device})...")
 
     config = EdgeContourConfig(
-        canny_low=30,
-        canny_high=100,
+        canny_low=35,
+        canny_high=105,
         morph_close_ksize=7,
         border_margin=6,
-        min_solidity=0.48,
-        max_aspect_ratio=4.3,
+        min_solidity=0.56,
+        max_aspect_ratio=3.8,
         filter_twigs=True,
-        only_diseased_in_field=False,  # Multi-deteksi: tampilkan semua daun (Sakit + Sehat)
+        filter_dof_blur=True,
+        min_relative_sharpness=0.48,
+        min_leaf_purity=0.70,
+        only_diseased_in_field=False,  # Multi-deteksi: tampilkan semua daun fokus tajam (Sakit + Sehat)
         fallback_to_bbox=False,
     )
     processor = EdgeContourPostProcessor(config=config)
@@ -115,13 +118,13 @@ def test_external_image(
 
     if used_field_seg:
         print(
-            f"[INFO] Mode Multi-Deteksi Daun Aktif (Bebas Ranting): "
+            f"[INFO] Mode Multi-Deteksi Daun Fokus Tajam (DoF + Filter Ranting Aktif): "
             f"Total {len(detections)} daun ({n_diseased} berpenyakit, {n_healthy} sehat)."
         )
     else:
         print(f"[INFO] Mode Deteksi Langsung: ditemukan {len(detections)} kandidat daun.")
 
-    # Panel 2: Visualisasi Bounding Box Multi-Daun (Sakit & Sehat, Bebas Ranting)
+    # Panel 2: Visualisasi Bounding Box Multi-Daun (Sakit & Sehat, Bebas Ranting & Blur)
     img_bbox = img_bgr.copy()
     for det, c_res in zip(detections, contour_results):
         x1, y1, x2, y2 = det.bbox_abs(W, H)
@@ -152,8 +155,8 @@ def test_external_image(
         show_bbox=False,
     )
 
-    # Panel 4: Peta Tepi Canny Khusus Daun (Ranting Dieliminasi)
-    edges_leaf_only, _ = compute_leaf_canny_edges(img_bgr, canny_low=30, canny_high=100)
+    # Panel 4: Peta Tepi Canny Khusus Daun Fokus Tajam (Ranting & Blur Dieliminasi)
+    edges_leaf_only, _ = compute_leaf_canny_edges(img_bgr, canny_low=35, canny_high=105)
 
     fig, axes = plt.subplots(2, 2, figsize=(16, 14))
 
@@ -163,7 +166,7 @@ def test_external_image(
 
     axes[0, 1].imshow(cv2.cvtColor(img_bbox, cv2.COLOR_BGR2RGB))
     axes[0, 1].set_title(
-        f"2. Multi-Deteksi YOLO26n+CA ({len(detections)} Daun: {n_diseased} Sakit, {n_healthy} Sehat)",
+        f"2. Multi-Deteksi Daun Fokus ({len(detections)} Daun: {n_diseased} Sakit, {n_healthy} Sehat)",
         fontsize=13,
         fontweight="bold",
     )
@@ -173,7 +176,7 @@ def test_external_image(
     supp_count = len(contour_results) - valid_count
     axes[1, 0].imshow(cv2.cvtColor(img_contour, cv2.COLOR_BGR2RGB))
     axes[1, 0].set_title(
-        f"3. Edge Contour Daun (Utuh: {valid_count} | Terpotong Tepi: {supp_count})",
+        f"3. Edge Contour Daun Fokus (Utuh: {valid_count} | Terpotong Tepi: {supp_count})",
         fontsize=13,
         fontweight="bold",
     )
@@ -181,7 +184,7 @@ def test_external_image(
 
     axes[1, 1].imshow(edges_leaf_only, cmap="gray")
     axes[1, 1].set_title(
-        "4. Canny Edge Map Khusus Daun (Ranting Dieliminasi)",
+        "4. Canny Edge Map Daun Fokus (Ranting & Background Blur Dieliminasi)",
         fontsize=13,
         fontweight="bold",
     )
