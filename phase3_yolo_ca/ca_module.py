@@ -234,6 +234,24 @@ def build_yolo26n_ca_pretrained(
 
     torch.manual_seed(seed)
 
+    # Pastikan base_pt_path ditemukan (cari di beberapa lokasi atau unduh otomatis)
+    if not os.path.exists(base_pt_path):
+        candidates = [
+            "/content/yolo26n.pt",
+            "/content/skripsi-tea-leaf-detection/yolo26n.pt",
+            "/content/drive/MyDrive/SKRIPSI/yolo26n.pt",
+            "yolo26n.pt",
+        ]
+        for c in candidates:
+            if os.path.exists(c):
+                base_pt_path = c
+                break
+        else:
+            print("[CA-REMAP] Mengunduh/memuat yolo26n.pt otomatis via Ultralytics...")
+            _tmp = YOLO("yolo26n.pt")
+            if os.path.exists("yolo26n.pt"):
+                base_pt_path = os.path.abspath("yolo26n.pt")
+
     # 1. Bangun model YOLO26n + CA dari YAML
     ca_yolo = YOLO(ca_yaml_path)
     ca_model = ca_yolo.model
@@ -266,7 +284,11 @@ def build_yolo26n_ca_pretrained(
 
     ca_model.load_state_dict(new_sd, strict=True)
 
-    # Simpan sebagai checkpoint Ultralytics standar
+    # Simpan sebagai checkpoint Ultralytics standar (train_args wajib berupa dict, bukan None)
+    orig_train_args = ckpt.get("train_args")
+    if not isinstance(orig_train_args, dict):
+        orig_train_args = {}
+
     save_Obj = {
         "epoch": -1,
         "best_fitness": None,
@@ -274,7 +296,7 @@ def build_yolo26n_ca_pretrained(
         "ema": None,
         "updates": None,
         "optimizer": None,
-        "train_args": None,
+        "train_args": orig_train_args,
         "date": None,
         "version": ckpt.get("version", "8.4.171"),
     }
@@ -285,6 +307,38 @@ def build_yolo26n_ca_pretrained(
     print(f"           ke arsitektur YOLO26n+CA ('{os.path.basename(out_pt_path)}').")
     print(f"           ({skipped_head_cls} tensor head klasifikasi 80-kelas COCO diinisialisasi ulang untuk 7 kelas teh).")
     return out_pt_path
+
+
+def find_best_weights(run_name: str = "yolo26n_ca_50ep") -> str:
+    """
+    Mencari file `best.pt` hasil training secara otomatis di berbagai kemungkinan
+    direktori Google Colab maupun lokal (termasuk `/content/phase3_runs`,
+    `/content/runs/detect`, dan Google Drive `/content/drive/MyDrive/SKRIPSI`).
+    """
+    import glob
+
+    exact_candidates = [
+        f"/content/phase3_runs/{run_name}/weights/best.pt",
+        f"/content/runs/detect/{run_name}/weights/best.pt",
+        f"/content/runs/detect/content/phase3_runs/{run_name}/weights/best.pt",
+        f"/content/drive/MyDrive/SKRIPSI/phase3_runs/{run_name}/weights/best.pt",
+    ]
+    for path in exact_candidates:
+        if os.path.exists(path):
+            return path
+
+    # Glob fallback di seluruh lokasi umum
+    search_patterns = [
+        "/content/phase3_runs/**/weights/best.pt",
+        "/content/runs/**/weights/best.pt",
+        "/content/drive/MyDrive/SKRIPSI/**/weights/best.pt",
+    ]
+    for pattern in search_patterns:
+        matches = sorted(glob.glob(pattern, recursive=True), key=os.path.getmtime, reverse=True)
+        if matches:
+            return matches[0]
+
+    return exact_candidates[0]
 
 
 if __name__ == "__main__":

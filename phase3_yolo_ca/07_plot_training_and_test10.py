@@ -27,7 +27,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 sys.path.insert(0, PROJECT_DIR)
 
-from phase3_yolo_ca.ca_module import register_ca_module
+from phase3_yolo_ca.ca_module import register_ca_module, find_best_weights
 register_ca_module()
 
 from ultralytics import YOLO  # noqa: E402
@@ -56,8 +56,9 @@ else:
     TEST_LBL_DIR = Path(PROJECT_DIR) / "tea_yolo" / "labels" / "test"
 
 RUN_DIR = RUNS_DIR / args.run_name
-RESULTS_CSV = RUN_DIR / "results.csv"
-BEST_WEIGHTS = RUN_DIR / "weights" / "best.pt"
+RUN_DIR.mkdir(parents=True, exist_ok=True)
+BEST_WEIGHTS = Path(find_best_weights(args.run_name))
+RESULTS_CSV = BEST_WEIGHTS.parent.parent / "results.csv" if BEST_WEIGHTS.exists() else (RUN_DIR / "results.csv")
 OUT_CURVES = RUN_DIR / "training_curves_hd.png"
 OUT_GRID10 = RUN_DIR / "10_test_predictions_grid.png"
 

@@ -22,7 +22,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 sys.path.insert(0, PROJECT_DIR)
 
-from phase3_yolo_ca.ca_module import register_ca_module
+from phase3_yolo_ca.ca_module import register_ca_module, find_best_weights
 register_ca_module()
 
 from ultralytics import YOLO  # noqa: E402
@@ -56,6 +56,8 @@ else:
 
 RUN_DIR = os.path.join(RUNS_DIR, args.run_name)
 BEST_MODEL = os.path.join(RUN_DIR, "weights", "best.pt")
+if not os.path.exists(BEST_MODEL):
+    BEST_MODEL = find_best_weights(args.run_name)
 EVAL_DIR = os.path.join(RUN_DIR, "test_eval")
 
 CLASS_NAMES = [

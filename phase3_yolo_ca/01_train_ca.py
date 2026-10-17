@@ -114,10 +114,17 @@ results = model.train(
 )
 
 elapsed = time.time() - t0
+target_run_dir = os.path.join(RUNS_DIR, args.run_name)
+actual_save_dir = str(getattr(results, "save_dir", target_run_dir))
+if os.path.abspath(actual_save_dir) != os.path.abspath(target_run_dir) and os.path.exists(actual_save_dir):
+    import shutil
+    shutil.copytree(actual_save_dir, target_run_dir, dirs_exist_ok=True)
+    print(f"[INFO] Menyinkronkan output training dari {actual_save_dir} -> {target_run_dir}")
+
 print(f"\n{'=' * 72}")
 print("  [4/4] Training YOLO26n + CA SELESAI!")
 print(f"  Total waktu  : {elapsed/3600:.2f} jam ({elapsed/60:.1f} menit)")
-print(f"  Best weights : {RUNS_DIR}/{args.run_name}/weights/best.pt")
+print(f"  Best weights : {target_run_dir}/weights/best.pt")
 print(f"{'=' * 72}")
 
 rd = results.results_dict
