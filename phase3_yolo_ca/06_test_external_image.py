@@ -1,12 +1,15 @@
 """
-FASE 3 (DIPERBARUI) - Script 06: Testing Gambar Eksternal / Google (URL & Upload)
-=================================================================================
-Perbaikan Kritis dibanding versi sebelumnya:
-1. Memperbaiki `ImportError: cannot import name 'CLASS_COLORS'` dengan mengimpor
-   `CLASS_COLORS` dan `CLASS_NAMES` yang sudah diekspor di level modul `edge_contour.py`.
-2. Memperbaiki `AttributeError` pada `det.bbox_abs(W, H)`, `processor.visualize()`,
-   `c.is_suppressed`, `res.suppress_reason`, dan `res.contour_found`.
-3. Mendukung deteksi GPU CUDA otomatis melalui `torch.cuda.is_available()`.
+FASE 3 (DIPERBARUI v2.1) - Script 06: Testing Gambar Eksternal / Lapangan (URL & Upload)
+========================================================================================
+Fitur & Perbaikan Kritis:
+1. Memisahkan Daun vs Ranting Kayu (Twig Filter) menggunakan Excess Green Index (ExG),
+   HSV Chlorophyll Gating, dan Internal Lesion Hole-Filling.
+2. Mendukung foto semak kebun (In-Situ Multi-Leaf Field Mode): jika YOLO terkena
+   Domain Shift (membuat 1 kotak penuh seukuran foto), script otomatis memecah
+   helai-helai daun menggunakan Distance-Transform Watershed (bebas ranting) dan
+   mengklasifikasikan tiap helai daun menggunakan YOLO26n+CA pada Kanvas Kertas Virtual.
+3. Panel 4 (Canny Edge Map) hanya menggambar garis tepi helai daun & bercak penyakit,
+   sedangkan seluruh ranting kayu di latar belakang dieliminasi.
 """
 
 import os
@@ -24,14 +27,14 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 sys.path.insert(0, PROJECT_DIR)
 
-from phase3_yolo_ca.ca_module import register_ca_module
+from phase3_yolo_ca.ca_module import register_ca_module, find_best_weights
 register_ca_module()
 
 from ultralytics import YOLO  # noqa: E402
 from phase3_yolo_ca.edge_contour import (
     EdgeContourPostProcessor,
     EdgeContourConfig,
-    yolo_result_to_detections,
+    compute_leaf_canny_edges,
     CLASS_NAMES,
     CLASS_COLORS,
 )
@@ -84,51 +87,60 @@ def test_external_image(
     model = YOLO(weights_path)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"[INFO] Menjalankan deteksi penyakit (YOLO26n + CA, device={device})...")
-    results = model.predict(img_bgr, conf=conf_thresh, imgsz=640, device=device, verbose=False)[0]
-    detections = yolo_result_to_detections(results)
-    print(f"[INFO] Terdeteksi {len(detections)} kandidat objek daun teh.")
+    print(f"[INFO] Menjalankan deteksi YOLO26n+CA + Filter Ranting (device={device})...")
 
-    print("[INFO] Mengekstrak kontur tepi daun & memeriksa kelengkapan...")
     config = EdgeContourConfig(
         canny_low=30,
         canny_high=100,
         morph_close_ksize=7,
-        border_margin=5,
-        min_solidity=0.45,
+        border_margin=6,
+        min_solidity=0.50,
+        max_aspect_ratio=4.2,
+        filter_twigs=True,
+        fallback_to_bbox=False,
     )
     processor = EdgeContourPostProcessor(config=config)
-    contour_results = processor.process_detections(img_bgr, detections)
 
-    # Panel 2: Visualisasi Bounding Box Standar
+    detections, contour_results, used_field_seg = processor.process_field_image_with_model(
+        model=model,
+        img_bgr=img_bgr,
+        conf_thresh=conf_thresh,
+        imgsz=640,
+        device=device,
+    )
+
+    if used_field_seg:
+        print(
+            f"[INFO] Mode Foto Semak/Lapangan Aktif: Ranting kayu dieliminasi, "
+            f"ditemukan {len(detections)} helai daun individual."
+        )
+    else:
+        print(f"[INFO] Mode Deteksi Langsung: ditemukan {len(detections)} kandidat daun.")
+
+    # Panel 2: Visualisasi Bounding Box per Helai Daun (Bebas Ranting)
     img_bbox = img_bgr.copy()
-    for det in detections:
+    for det, c_res in zip(detections, contour_results):
         x1, y1, x2, y2 = det.bbox_abs(W, H)
         color = CLASS_COLORS.get(det.class_name, (0, 255, 0))
-        cv2.rectangle(img_bbox, (x1, y1), (x2, y2), color, 2)
-        label = f"{det.class_name} {det.confidence:.2f}"
+        thickness = 3 if c_res.is_complete else 1
+        cv2.rectangle(img_bbox, (x1, y1), (x2, y2), color, thickness)
+        status_tag = "" if c_res.is_complete else " [Tepi]"
+        label = f"{det.class_name} {det.confidence:.2f}{status_tag}"
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 1)
+        y_lbl = max(th + 6, y1)
+        cv2.rectangle(img_bbox, (x1, y_lbl - th - 6), (min(W - 1, x1 + tw + 6), y_lbl), color, -1)
         cv2.putText(
             img_bbox,
             label,
-            (x1, max(15, y1 - 6)),
+            (x1 + 3, y_lbl - 4),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
+            0.52,
             (255, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            img_bbox,
-            label,
-            (x1, max(15, y1 - 6)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            color,
             1,
             cv2.LINE_AA,
         )
 
-    # Panel 3: Visualisasi Edge Contour
+    # Panel 3: Visualisasi Edge Contour Daun (Utuh vs Terpotong)
     img_contour = processor.draw_results(
         img_bgr,
         contour_results,
@@ -136,10 +148,8 @@ def test_external_image(
         show_bbox=False,
     )
 
-    # Panel 4: Peta Tepi Canny
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blurred, 30, 100)
+    # Panel 4: Peta Tepi Canny Khusus Daun (Ranting Dieliminasi)
+    edges_leaf_only, _ = compute_leaf_canny_edges(img_bgr, canny_low=30, canny_high=100)
 
     fig, axes = plt.subplots(2, 2, figsize=(16, 14))
 
@@ -149,7 +159,7 @@ def test_external_image(
 
     axes[0, 1].imshow(cv2.cvtColor(img_bbox, cv2.COLOR_BGR2RGB))
     axes[0, 1].set_title(
-        f"2. YOLO26n+CA Bounding Box ({len(detections)} deteksi)",
+        f"2. YOLO26n+CA Bounding Box ({len(detections)} daun, ranting difilter)",
         fontsize=13,
         fontweight="bold",
     )
@@ -159,14 +169,18 @@ def test_external_image(
     supp_count = len(contour_results) - valid_count
     axes[1, 0].imshow(cv2.cvtColor(img_contour, cv2.COLOR_BGR2RGB))
     axes[1, 0].set_title(
-        f"3. Edge Contour Daun (Utuh: {valid_count} | Terpotong/Suppressed: {supp_count})",
+        f"3. Edge Contour Daun (Utuh: {valid_count} | Terpotong Tepi: {supp_count})",
         fontsize=13,
         fontweight="bold",
     )
     axes[1, 0].axis("off")
 
-    axes[1, 1].imshow(edges, cmap="gray")
-    axes[1, 1].set_title("4. Canny Edge Map (Deteksi Garis Tepi)", fontsize=13, fontweight="bold")
+    axes[1, 1].imshow(edges_leaf_only, cmap="gray")
+    axes[1, 1].set_title(
+        "4. Canny Edge Map Khusus Daun (Ranting Dieliminasi)",
+        fontsize=13,
+        fontweight="bold",
+    )
     axes[1, 1].axis("off")
 
     plt.tight_layout()
@@ -174,22 +188,22 @@ def test_external_image(
     plt.savefig(comparison_save, dpi=150, bbox_inches="tight")
     plt.close()
 
-    print("\n" + "=" * 65)
-    print("  HASIL ANALISIS DETEKSI")
-    print("=" * 65)
+    print("\n" + "=" * 68)
+    print("  HASIL ANALISIS DETEKSI PER HELAI DAUN (BEBAS RANTING)")
+    print("=" * 68)
     for i, res in enumerate(contour_results):
         status = "UTUH (DITERIMA)" if res.is_complete else f"SUPPRESSED ({res.reason})"
         print(f"[{i+1}] Kelas: {res.detection.class_name:<20} Conf: {res.detection.confidence:.3f}")
         print(f"    Status Daun : {status}")
         if res.contour is not None:
-            print(f"    Luas Kontur : {res.contour_area:.1f} px | Solidity: {res.solidity:.2f}")
-    print("=" * 65)
+            print(f"    Luas Kontur : {res.contour_area:.0f} px² | Solidity: {res.solidity:.2f}")
+    print("=" * 68)
     print(f"\n[SUKSES] Hasil visualisasi disimpan di: {comparison_save}")
     return comparison_save
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Test gambar eksternal dengan YOLO26n+CA + Edge Contour (v2)")
+    parser = argparse.ArgumentParser(description="Test gambar eksternal dengan YOLO26n+CA + Twig Filter (v2.1)")
     parser.add_argument("--url", default=None, help="URL langsung gambar daun")
     parser.add_argument("--image", default=None, help="Path gambar lokal")
     parser.add_argument("--weights", default=None, help="Path ke weights best.pt")
@@ -198,18 +212,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     weights = args.weights
-    if not weights:
-        candidates = [
-            os.path.join(PROJECT_DIR, "phase3_runs", "yolo26n_ca_50ep", "weights", "best.pt"),
-            "/content/phase3_runs/yolo26n_ca_50ep/weights/best.pt",
-            os.path.join(PROJECT_DIR, "best.pt"),
-        ]
-        for c in candidates:
-            if os.path.exists(c):
-                weights = c
-                break
+    if not weights or not os.path.exists(weights):
+        weights = find_best_weights("yolo26n_ca_50ep")
 
-    if not weights:
+    if not weights or not os.path.exists(weights):
         print("[ERROR] File best.pt tidak ditemukan. Tentukan dengan argumen --weights <path>")
         sys.exit(1)
 
@@ -219,4 +225,3 @@ if __name__ == "__main__":
         test_external_image(args.image, weights, is_url=False, conf_thresh=args.conf, output_dir=args.out)
     else:
         print("[ERROR] Mohon masukkan argumen --url <URL_GAMBAR> atau --image <PATH_GAMBAR>")
-
