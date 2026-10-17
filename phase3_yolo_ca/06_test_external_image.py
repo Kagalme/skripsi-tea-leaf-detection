@@ -94,10 +94,10 @@ def test_external_image(
         canny_high=100,
         morph_close_ksize=7,
         border_margin=6,
-        min_solidity=0.50,
-        max_aspect_ratio=4.2,
+        min_solidity=0.48,
+        max_aspect_ratio=4.3,
         filter_twigs=True,
-        only_diseased_in_field=True,
+        only_diseased_in_field=False,  # Multi-deteksi: tampilkan semua daun (Sakit + Sehat)
         fallback_to_bbox=False,
     )
     processor = EdgeContourPostProcessor(config=config)
@@ -110,24 +110,27 @@ def test_external_image(
         device=device,
     )
 
+    n_healthy = sum(1 for d in detections if d.class_id == 6)
+    n_diseased = len(detections) - n_healthy
+
     if used_field_seg:
         print(
-            f"[INFO] Mode Per-Daun Berpenyakit Aktif: Ranting & daun sehat diabaikan, "
-            f"ditemukan {len(detections)} helai daun berpenyakit."
+            f"[INFO] Mode Multi-Deteksi Daun Aktif (Bebas Ranting): "
+            f"Total {len(detections)} daun ({n_diseased} berpenyakit, {n_healthy} sehat)."
         )
     else:
         print(f"[INFO] Mode Deteksi Langsung: ditemukan {len(detections)} kandidat daun.")
 
-    # Panel 2: Visualisasi Bounding Box per Helai Daun Berpenyakit
+    # Panel 2: Visualisasi Bounding Box Multi-Daun (Sakit & Sehat, Bebas Ranting)
     img_bbox = img_bgr.copy()
     for det, c_res in zip(detections, contour_results):
         x1, y1, x2, y2 = det.bbox_abs(W, H)
         color = CLASS_COLORS.get(det.class_name, (0, 255, 0))
-        thickness = 3 if c_res.is_complete else 1
+        thickness = 3 if c_res.is_complete else 2
         cv2.rectangle(img_bbox, (x1, y1), (x2, y2), color, thickness)
         status_tag = "" if c_res.is_complete else " [Tepi]"
         label = f"{det.class_name} {det.confidence:.2f}{status_tag}"
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 1)
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.50, 1)
         y_lbl = max(th + 6, y1)
         cv2.rectangle(img_bbox, (x1, y_lbl - th - 6), (min(W - 1, x1 + tw + 6), y_lbl), color, -1)
         cv2.putText(
@@ -135,7 +138,7 @@ def test_external_image(
             label,
             (x1 + 3, y_lbl - 4),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.52,
+            0.50,
             (255, 255, 255),
             1,
             cv2.LINE_AA,
@@ -160,7 +163,7 @@ def test_external_image(
 
     axes[0, 1].imshow(cv2.cvtColor(img_bbox, cv2.COLOR_BGR2RGB))
     axes[0, 1].set_title(
-        f"2. YOLO26n+CA Bounding Box ({len(detections)} daun berpenyakit)",
+        f"2. Multi-Deteksi YOLO26n+CA ({len(detections)} Daun: {n_diseased} Sakit, {n_healthy} Sehat)",
         fontsize=13,
         fontweight="bold",
     )
