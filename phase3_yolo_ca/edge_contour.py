@@ -1,15 +1,19 @@
 """
-FASE 3 (DIPERBARUI v2.1) - Edge Contour & Twig-Filter Postprocessing Module
-===========================================================================
-Mengubah bounding box YOLO26n+CA menjadi POLYGON KONTUR DAUN menggunakan:
+FASE 3 (DIPERBARUI v2.2) - Edge Contour, Twig-Filter & Per-Diseased-Leaf Detector
+=================================================================================
+Mengubah deteksi YOLO26n+CA menjadi POLYGON KONTUR PER HELAI DAUN BERPENYAKIT:
 1. Filter Spektral Klorofil & Eliminasi Ranting (Excess Green ExG + HSV Twig Gating
-   + Internal Lesion Hole-Filling) agar ranting kayu coklat/abu-abu tidak ikut
-   terdeteksi sebagai daun maupun bercak penyakit.
-2. Multi-Leaf Field Instance Segmentation (Distance Transform + Shadow-Cut Watershed)
-   untuk memisahkan helai-helai daun pada foto semak kebun (in-situ) dan mengatasi
-   Domain Shift (1 kotak penuh) melalui inferensi Kanvas Kertas Virtual per helai daun.
-3. Canny Edge Detection khusus area daun (bebas ranting) + pemeriksaan kelengkapan
-   kontur daun (Utuh vs Terpotong batas citra).
+   + Midrib Bridging + Internal Lesion Hole-Filling) agar ranting kayu coklat/abu-abu
+   tidak ikut terdeteksi, sementara daun terserang Red Spider (perunggu) & bercak
+   coklat di dalam daun tetap utuh 100%.
+2. Isolasi Per Helai Daun dengan Core-Geodesic Distance Reconstruction:
+   Mencegah kotak deteksi melebar/menyatu ke daun tetangga pada foto semak kebun.
+   Setiap puncak Distance Transform direkonstruksi secara lokal sesuai lebar alami
+   satu helai daun (tidak membanjiri seluruh semak).
+3. Filter Khusus Daun Berpenyakit (Diseased-Leaf Only Mode):
+   Menganalisis rasio bercak/gejala nekrosis & bronzing di dalam lamina daun serta
+   klasifikasi YOLO26n+CA sehingga bounding box hanya dipasang pada helai-helai
+   daun yang memiliki penyakit (mengabaikan daun sehat di latar belakang).
 """
 
 import cv2
@@ -66,9 +70,10 @@ class EdgeContourConfig:
     min_solidity: float = 0.50
     max_aspect_ratio: float = 4.2   # Menolak kontur memanjang seperti ranting (L/W > 4.2)
     filter_twigs: bool = True       # Aktifkan filter pemisah daun vs ranting
+    only_diseased_in_field: bool = True  # Hanya deteksi daun yang berpenyakit pada foto kebun
     max_contour_points: int = 100
     approx_epsilon_ratio: float = 0.004
-    fallback_to_bbox: bool = False  # Jangan fallback ke kotak penuh jika kontur adalah ranting
+    fallback_to_bbox: bool = False
     draw_contour: bool = True
 
 
@@ -123,14 +128,11 @@ class ContourResult:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Fungsi Inti Pemisah Daun vs Ranting (Spectral Chlorophyll + Twig Suppression)
+# 1. Pemisah Spektral Daun vs Ranting Kayu (Twig Suppression + Midrib Bridging)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def is_white_paper_background(img_bgr: np.ndarray) -> bool:
-    """
-    Mendeteksi apakah gambar berasal dari studio/kertas putih seperti dataset teaLeafBD
-    atau foto kebun lapangan (in-situ).
-    """
+    """Mendeteksi apakah gambar berasal dari kertas putih studio (teaLeafBD) atau kebun."""
     H, W = img_bgr.shape[:2]
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
     border_mask = np.zeros((H, W), dtype=bool)
@@ -147,11 +149,10 @@ def is_white_paper_background(img_bgr: np.ndarray) -> bool:
     return float(np.mean(paper_pixels)) > 0.35
 
 
-def _fill_small_internal_holes(binary_mask: np.ndarray, max_hole_ratio: float = 0.025) -> np.ndarray:
+def _fill_small_internal_holes(binary_mask: np.ndarray, max_hole_ratio: float = 0.05) -> np.ndarray:
     """
-    Mengisi lubang-lubang kecil di bagian dalam lamina daun (seperti bercak coklat
-    Brown Blight / Helopeltis atau lubang gigitan serangga) TANPA mengisi celah
-    latar belakang / ranting di luar daun.
+    Mengisi lubang-lubang bercak penyakit coklat/hitam di bagian dalam lamina daun
+    TANPA mengisi celah latar belakang / ranting di luar daun.
     """
     H, W = binary_mask.shape[:2]
     max_hole_px = int(H * W * max_hole_ratio)
@@ -170,12 +171,10 @@ def _fill_small_internal_holes(binary_mask: np.ndarray, max_hole_ratio: float = 
 def compute_leaf_mask_no_twigs(img_bgr: np.ndarray) -> np.ndarray:
     """
     Menghasilkan binary mask (0 atau 255) yang HANYA berisi area helai daun teh
-    dan secara aktif membuang:
-    - Ranting kayu coklat / kemerahan (R >= G, Hue < 20 atau > 155, ExG rendah)
-    - Ranting kering / lumut abu-abu (Saturasi rendah & ExG rendah)
-    - Bayangan gelap antar-daun (Value rendah)
-    Namun tetap mempertahankan bercak penyakit di dalam helai daun melalui
-    Internal Hole Filling.
+    (termasuk daun perunggu Red Spider dan tulang daun tengah), serta membuang:
+    - Ranting kayu coklat / kemerahan
+    - Ranting kering / lumut abu-abu
+    - Bayangan gelap antar-daun
     """
     H, W = img_bgr.shape[:2]
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
@@ -185,12 +184,9 @@ def compute_leaf_mask_no_twigs(img_bgr: np.ndarray) -> np.ndarray:
     g_f = img_bgr[:, :, 1].astype(np.float32)
     r_f = img_bgr[:, :, 2].astype(np.float32)
 
-    # Excess Green Index (ExG = 2G - R - B)
     exg = 2.0 * g_f - r_f - b_f
 
     if is_white_paper_background(img_bgr):
-        # Mode Lab / Kertas Putih (teaLeafBD): semua objek non-kertas adalah daun,
-        # tetapi tetap buang tangkai/ranting tipis dengan morphological opening
         not_paper = ~((v_ch > 160) & (s_ch < 50))
         not_skin = ~((r_f - b_f > 35) & (r_f - g_f > 15) & (v_ch > 90))
         raw_mask = ((not_paper & not_skin) | (exg > 15)).astype(np.uint8) * 255
@@ -198,39 +194,56 @@ def compute_leaf_mask_no_twigs(img_bgr: np.ndarray) -> np.ndarray:
         k_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         return cv2.morphologyEx(raw_mask, cv2.MORPH_OPEN, k_open, iterations=1)
 
-    # Mode Lapangan / Kebun (In-Situ):
-    # 1. Deteksi eksplisit piksel ranting kayu (coklat, kemerahan, atau abu-abu kering)
-    is_brown_twig = (
-        (h_ch < 19) | (h_ch > 150) | (r_f > g_f + 4.0) | ((exg < 14.0) & (r_f >= g_f - 6.0))
+    # Mode Kebun / Lapangan:
+    # 1. Ranting kayu coklat memiliki R jauh lebih tinggi dari G, atau G-B rendah
+    is_woody_twig = (
+        (h_ch < 13)
+        | (h_ch > 150)
+        | (r_f > g_f + 20.0)
+        | ((r_f > g_f + 4.0) & (g_f - b_f < 32.0))
+        | (exg < 8.0)
     )
-    is_gray_twig = (s_ch < 42) & (exg < 22.0)
+    # 2. Ranting kering / lumut abu-abu memiliki saturasi rendah & ExG rendah
+    is_gray_twig = (s_ch < 35) & (exg < 22.0)
+    # 3. Celah bayangan gelap antar-daun
     is_dark_shadow = (v_ch < 48)
 
-    # 2. Deteksi klorofil lamina daun (hijau hingga kuning-hijau pucuk teh)
-    is_green_lamina = (
-        (h_ch >= 19)
-        & (h_ch <= 88)
-        & (s_ch >= 40)
+    # 4. Lamina daun hijau maupun daun perunggu (Red Spider memiliki G-B tinggi > 35 meski R ~= G)
+    is_leaf_lamina = (
+        (h_ch >= 13)
+        & (h_ch <= 90)
+        & (s_ch >= 35)
         & (v_ch >= 48)
-        & (exg > 14.0)
-        & (g_f > b_f + 10.0)
-        & (~is_brown_twig)
+        & (exg >= 10.0)
+        & (g_f > b_f + 14.0)
+        & (~is_woody_twig)
         & (~is_gray_twig)
         & (~is_dark_shadow)
     )
 
-    mask = (is_green_lamina.astype(np.uint8)) * 255
+    mask = (is_leaf_lamina.astype(np.uint8)) * 255
 
-    # 3. Isi bercak penyakit coklat / lubang serangga yang berada DI DALAM helai daun
-    mask = _fill_small_internal_holes(mask, max_hole_ratio=0.022)
+    # 5. Sambungkan garis tulang daun tengah (midrib) agar daun tidak terbelah dua
+    close_k = max(7, int(min(H, W) * 0.014) | 1)
+    mask = cv2.morphologyEx(
+        mask,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_k, close_k)),
+        iterations=1,
+    )
 
-    # 4. Putuskan jembatan ranting / tangkai tipis dengan Morphological Opening
-    open_k = max(5, int(min(H, W) * 0.012) | 1)
-    kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_k, open_k))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_open, iterations=1)
+    # 6. Isi seluruh lubang bercak penyakit coklat/hitam di bagian dalam helai daun
+    mask = _fill_small_internal_holes(mask, max_hole_ratio=0.055)
 
-    # 5. Isi kembali lubang internal kecil setelah opening
-    mask = _fill_small_internal_holes(mask, max_hole_ratio=0.022)
+    # 7. Putuskan jembatan tangkai/ranting tipis dengan Morphological Opening
+    open_k = max(5, int(min(H, W) * 0.014) | 1)
+    mask = cv2.morphologyEx(
+        mask,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_k, open_k)),
+        iterations=1,
+    )
+    mask = _fill_small_internal_holes(mask, max_hole_ratio=0.055)
     return mask
 
 
@@ -240,19 +253,17 @@ def compute_leaf_canny_edges(
     """
     Menghasilkan Canny Edge Map yang HANYA menampilkan garis tepi daun & bercak
     di dalam daun, sedangkan seluruh ranting kayu di latar belakang dieliminasi.
-    Returns:
-        edges_leaf_only: Peta tepi Canny bebas ranting (H, W) uint8
-        leaf_mask      : Masker biner area daun bebas ranting (H, W) uint8
     """
     leaf_mask = compute_leaf_mask_no_twigs(img_bgr)
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     raw_edges = cv2.Canny(blurred, canny_low, canny_high)
 
-    # Tambahkan kontur batas masker daun agar siluet helai daun tampak tegas
     k_dil = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     mask_dilated = cv2.dilate(leaf_mask, k_dil, iterations=1)
-    mask_boundary = cv2.morphologyEx(leaf_mask, cv2.MORPH_GRADIENT, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+    mask_boundary = cv2.morphologyEx(
+        leaf_mask, cv2.MORPH_GRADIENT, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    )
 
     edges_leaf_only = cv2.bitwise_and(raw_edges, mask_dilated)
     edges_leaf_only = cv2.bitwise_or(edges_leaf_only, mask_boundary)
@@ -260,10 +271,7 @@ def compute_leaf_canny_edges(
 
 
 def _contour_geometry_metrics(contour: np.ndarray) -> Tuple[float, float, float]:
-    """
-    Menghitung (area, solidity, aspect_ratio) dari sebuah kontur.
-    Ranting kayu memiliki aspect_ratio sangat besar (> 4.5) atau solidity rendah (< 0.45).
-    """
+    """Menghitung (area, solidity, aspect_ratio) dari sebuah kontur."""
     area = float(cv2.contourArea(contour))
     hull = cv2.convexHull(contour)
     hull_area = float(cv2.contourArea(hull))
@@ -278,41 +286,146 @@ def _contour_geometry_metrics(contour: np.ndarray) -> Tuple[float, float, float]
     return area, solidity, aspect_ratio
 
 
-def segment_field_leaves(
-    img_bgr: np.ndarray,
-    min_area_ratio: float = 0.020,
-    max_area_ratio: float = 0.65,
-    min_solidity: float = 0.52,
-    max_aspect_ratio: float = 4.2,
-) -> List[Tuple[np.ndarray, Tuple[int, int, int, int], float]]:
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. Detektor Gejala Penyakit Internal & Isolasi Per Helai Daun (Core-Geodesic)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def compute_leaf_disease_symptom_score(img_bgr: np.ndarray, contour_abs: np.ndarray) -> Tuple[bool, float, str]:
     """
-    Memisahkan helai-helai daun individual dari citra semak kebun (in-situ) menggunakan:
-    1. Masker Klorofil Bebas-Ranting (`compute_leaf_mask_no_twigs`)
-    2. Pemotongan Celah Bayangan & Gradien Antar-Daun (Inter-Leaf Crease Cut)
-    3. Euclidean Distance Transform + Local Maxima Seeded Watershed
-    4. Seleksi Geometri Helai Daun (menolak objek tipis memanjang seperti ranting)
+    Menganalisis bagian dalam (interior) dari satu helai daun untuk mengecek apakah
+    helai daun tersebut benar-benar memiliki gejala penyakit (bercak coklat/hitam,
+    lubang gigitan Helopeltis, bercak abu-abu Gray Blight, atau bronzing Red Spider),
+    ATAU hanya daun hijau sehat biasa.
 
     Returns:
-        List of (contour_abs, (x1, y1, x2, y2), solidity) diurutkan dari daun paling
-        dominan/tengah ke tepi.
+        (is_diseased, symptom_score, symptom_detail)
+    """
+    H, W = img_bgr.shape[:2]
+    bx, by, bw, bh = cv2.boundingRect(contour_abs)
+    x1, y1, x2, y2 = max(0, bx), max(0, by), min(W, bx + bw), min(H, by + bh)
+    if x2 <= x1 or y2 <= y1:
+        return False, 0.0, "empty"
+
+    crop = img_bgr[y1:y2, x1:x2]
+    ch, cw = crop.shape[:2]
+    mask = np.zeros((ch, cw), dtype=np.uint8)
+    cnt_local = contour_abs.copy()
+    cnt_local[:, :, 0] -= x1
+    cnt_local[:, :, 1] -= y1
+    cv2.drawContours(mask, [cnt_local], -1, 255, -1)
+
+    # Erosi sedikit agar pinggiran luar daun tidak terhitung sebagai bercak
+    erode_k = max(3, int(min(ch, cw) * 0.05) | 1)
+    inner_mask = cv2.erode(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_k, erode_k)))
+    n_inner = int(np.count_nonzero(inner_mask))
+    if n_inner < 100:
+        inner_mask = mask
+        n_inner = int(np.count_nonzero(inner_mask))
+    if n_inner == 0:
+        return False, 0.0, "empty"
+
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    h_in = hsv[:, :, 0][inner_mask > 0].astype(np.float32)
+    s_in = hsv[:, :, 1][inner_mask > 0].astype(np.float32)
+    v_in = hsv[:, :, 2][inner_mask > 0].astype(np.float32)
+
+    b_in = crop[:, :, 0][inner_mask > 0].astype(np.float32)
+    g_in = crop[:, :, 1][inner_mask > 0].astype(np.float32)
+    r_in = crop[:, :, 2][inner_mask > 0].astype(np.float32)
+
+    # 1. Bercak nekrosis coklat / hitam / lubang gelap di dalam daun (Brown Blight / Helopeltis / Algal)
+    necrotic_spots = (
+        (v_in < 85.0)
+        | (r_in > g_in - 4.0)
+        | (h_in < 21.0)
+        | (h_in > 140.0)
+        | ((s_in < 42.0) & (v_in < 155.0))
+    )
+    spot_ratio = float(np.mean(necrotic_spots))
+
+    # 2. Warna perunggu / kemerahan merata (Red Spider bronzing: Hue 13..28 dengan R tinggi terhadap G)
+    bronze_pixels = (h_in >= 13.0) & (h_in <= 28.0) & (r_in >= 0.82 * g_in)
+    bronze_ratio = float(np.mean(bronze_pixels))
+
+    # 3. Variansi warna lokal (daun sehat memiliki warna hijau mulus seragam, daun sakit bercak-bercak)
+    exg_in = 2.0 * g_in - r_in - b_in
+    low_exg_ratio = float(np.mean(exg_in < 28.0))
+
+    symptom_score = max(spot_ratio * 3.5, bronze_ratio * 1.8, low_exg_ratio * 1.2)
+
+    # Daun dinyatakan BERPENYAKIT jika:
+    # - Memiliki bercak nekrosis/lubang >= 2.2% luas dalam daun, ATAU
+    # - Memiliki permukaan perunggu Red Spider >= 14%, ATAU
+    # - Memiliki area klorosis/bercak (low ExG) >= 16%
+    is_diseased = (spot_ratio >= 0.022) or (bronze_ratio >= 0.14) or (low_exg_ratio >= 0.16)
+    detail = f"spot={spot_ratio*100:.1f}%, bronze={bronze_ratio*100:.1f}%"
+    return is_diseased, float(symptom_score), detail
+
+
+def _extract_long_interleaf_boundaries(img_bgr: np.ndarray, base_mask: np.ndarray) -> np.ndarray:
+    """
+    Mengekstrak garis batas panjang antar-helai daun (outer leaf margins & shadow creases)
+    tetapi MENGABAIKAN tepi bercak-bercak kecil di dalam daun (diameter < 10% ukuran citra)
+    agar bercak penyakit tidak membelah atau melubangi helai daun.
+    """
+    H, W = img_bgr.shape[:2]
+    min_dim = min(H, W)
+
+    smooth = cv2.bilateralFilter(img_bgr, 9, 50, 50)
+    gray = cv2.cvtColor(smooth, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+    raw_edges = cv2.Canny(clahe, 35, 95)
+
+    # Filter komponen terhubung dari garis Canny: hanya simpan busur garis yang panjang
+    # (batas antar-daun), buang cincin kecil (bercak penyakit di dalam daun)
+    dil_edges = cv2.dilate(raw_edges, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+    num_l, labels, stats, _ = cv2.connectedComponentsWithStats(dil_edges, connectivity=8)
+
+    long_edges = np.zeros((H, W), dtype=np.uint8)
+    min_span = int(min_dim * 0.11)
+    for lbl in range(1, num_l):
+        _, _, bw, bh, area = stats[lbl]
+        span = max(bw, bh)
+        if span >= min_span and area >= int(min_dim * 0.15):
+            long_edges[labels == lbl] = 255
+
+    # Hanya potong pada garis batas panjang yang juga memiliki bayangan/gradien gelap
+    hsv = cv2.cvtColor(smooth, cv2.COLOR_BGR2HSV)
+    v_ch = hsv[:, :, 2]
+    barrier = ((long_edges > 0) & (v_ch < 135)) | (v_ch < 58)
+    return (barrier.astype(np.uint8)) * 255
+
+
+def segment_field_leaves(
+    img_bgr: np.ndarray,
+    min_area_ratio: float = 0.022,
+    max_area_ratio: float = 0.48,
+    min_solidity: float = 0.55,
+    max_aspect_ratio: float = 4.0,
+) -> List[Tuple[np.ndarray, Tuple[int, int, int, int], float]]:
+    """
+    Memisahkan helai-helai daun individual (`per daun`) dari citra semak kebun menggunakan
+    **Core-Geodesic Distance Reconstruction**:
+    1. Masker daun bebas-ranting (`base_mask`) dengan lubang bercak internal tertutup rapat.
+    2. Pemotongan garis batas panjang antar-daun (`_extract_long_interleaf_boundaries`).
+    3. Euclidean Distance Transform (`dist`): menemukan puncak tengah masing-masing helai daun
+       dengan jari-jari lokal `r_peak` (setengah lebar helai daun tersebut).
+    4. Rekonstruksi Lokal Terbatas (`Core = dist >= 0.42 * r_peak` -> dilasi kembali sebesar
+       `0.52 * r_peak` di dalam `base_mask`):
+       Memastikan setiap kontur HANYA membungkus 1 helai daun tunggal dan TIDAK PERNAH
+       melebar/menyatu ke daun tetangga!
     """
     H, W = img_bgr.shape[:2]
     img_area = float(H * W)
     base_mask = compute_leaf_mask_no_twigs(img_bgr)
 
-    # Potong celah bayangan gelap / tepi batas antar daun yang saling menempel
-    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-    v_ch = hsv[:, :, 2]
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    smooth = cv2.bilateralFilter(gray, 7, 45, 45)
-    strong_edges = cv2.Canny(smooth, 40, 110)
-
-    # Hanya potong pada garis tepi yang sekaligus gelap (celah bayangan antar daun),
-    # bukan bercak di tengah daun yang sudah di-fill
-    inter_leaf_crease = ((strong_edges > 0) & (v_ch < 105)) | (v_ch < 58)
+    # Potong garis batas panjang antar-daun tanpa melubangi bercak kecil di dalam daun
+    barrier = _extract_long_interleaf_boundaries(img_bgr, base_mask)
     cut_mask = base_mask.copy()
-    cut_mask[inter_leaf_crease] = 0
+    cut_mask[barrier > 0] = 0
 
+    # Tutup kembali lubang kecil internal yang mungkin tersentuh, lalu buka jembatan tipis
+    cut_mask = _fill_small_internal_holes(cut_mask, max_hole_ratio=0.04)
     k_open = max(5, int(min(H, W) * 0.012) | 1)
     cut_mask = cv2.morphologyEx(
         cut_mask,
@@ -320,51 +433,79 @@ def segment_field_leaves(
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_open, k_open)),
         iterations=1,
     )
-    cut_mask = _fill_small_internal_holes(cut_mask, max_hole_ratio=0.018)
+    cut_mask = _fill_small_internal_holes(cut_mask, max_hole_ratio=0.04)
 
-    # Distance Transform untuk menemukan pusat masing-masing helai daun
+    # Distance Transform pada cut_mask yang solid di bagian tengah tiap daun
     dist = cv2.distanceTransform(cut_mask, cv2.DIST_L2, 5)
-    sigma = max(3.0, min(H, W) * 0.018)
+    sigma = max(3.5, min(H, W) * 0.016)
     k_blur = int(sigma * 4) | 1
     dist_smooth = cv2.GaussianBlur(dist, (k_blur, k_blur), sigma)
 
-    # Cari local maxima (puncak tengah tiap helai daun) dengan non-maximum suppression
-    nms_radius = max(15, int(min(H, W) * 0.12))
+    # Cari puncak tengah masing-masing helai daun
+    nms_radius = max(14, int(min(H, W) * 0.095))
     k_nms = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (nms_radius * 2 + 1, nms_radius * 2 + 1))
-    local_max = (dist_smooth == cv2.dilate(dist_smooth, k_nms)) & (
-        dist_smooth >= max(10.0, min(H, W) * 0.032)
-    ) & (cut_mask > 0)
-
-    num_seeds, seed_labels = cv2.connectedComponents(local_max.astype(np.uint8))
-
-    # Siapkan marker untuk Watershed:
-    # 1 = Background (bukan daun / ranting), 2..N+1 = Kandidat helai daun
-    markers = np.zeros((H, W), dtype=np.int32)
-    markers[base_mask == 0] = 1
-    for s_id in range(1, num_seeds):
-        # Perluas sedikit titik puncak sebagai core marker
-        seed_mask = (seed_labels == s_id).astype(np.uint8) * 255
-        seed_dil = cv2.dilate(seed_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
-        markers[(seed_dil > 0) & (base_mask > 0)] = s_id + 1
-
-    # Jalankan Watershed pada citra terfilter bilateral
-    img_ws = cv2.bilateralFilter(img_bgr, 7, 40, 40)
-    cv2.watershed(img_ws, markers)
-
-    leaf_instances = []
-    k_close_inst = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE, (max(7, int(min(H, W) * 0.018) | 1),) * 2
+    min_peak_dist = max(12.0, min(H, W) * 0.030)
+    local_max = (
+        (dist_smooth == cv2.dilate(dist_smooth, k_nms))
+        & (dist_smooth >= min_peak_dist)
+        & (cut_mask > 0)
     )
 
-    for s_id in range(1, num_seeds):
-        inst_id = s_id + 1
-        inst_mask = ((markers == inst_id) & (base_mask > 0)).astype(np.uint8) * 255
-        if np.count_nonzero(inst_mask) < int(img_area * min_area_ratio):
+    peak_ys, peak_xs = np.where(local_max)
+    # Urutkan puncak dari yang terbesar (daun paling lebar/jelas)
+    peaks = sorted(
+        [(float(dist[py, px]), int(px), int(py)) for py, px in zip(peak_ys, peak_xs)],
+        key=lambda t: t[0],
+        reverse=True,
+    )
+
+    raw_candidates = []
+    for r_peak, px, py in peaks:
+        if r_peak < min_peak_dist:
             continue
 
-        # Haluskan bentuk helai daun & isi lubang bercak internalnya
-        inst_mask = cv2.morphologyEx(inst_mask, cv2.MORPH_CLOSE, k_close_inst, iterations=1)
-        inst_mask = _fill_small_internal_holes(inst_mask, max_hole_ratio=0.03)
+        # 1. Ambil inti helai daun (Core) pada ambang 0.38 * r_peak agar jembatan ke daun lain putus
+        core_thresh = max(6.0, 0.38 * r_peak)
+        core_bin = ((dist >= core_thresh) & (cut_mask > 0)).astype(np.uint8)
+        _, core_labels = cv2.connectedComponents(core_bin, connectivity=8)
+        target_lbl = core_labels[py, px]
+        if target_lbl == 0:
+            continue
+
+        single_core = (core_labels == target_lbl).astype(np.uint8) * 255
+
+        # Batasi jangkauan maksimum inti agar tidak merembet ke daun lain jika ada jembatan lebar
+        yy, xx = np.ogrid[:H, :W]
+        max_leaf_reach = (
+            ((xx - px) / max(1.0, 1.55 * r_peak)) ** 2
+            + ((yy - py) / max(1.0, 2.45 * r_peak)) ** 2
+        ) <= 1.0
+        single_core[~max_leaf_reach] = 0
+
+        # 2. Rekonstruksi (dilasi balik) sebesar 0.62 * r_peak di dalam base_mask untuk
+        #    mengembalikan tepi asli helai daun tunggal tersebut
+        dil_rad = max(5, int(0.62 * r_peak))
+        k_rec = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dil_rad * 2 + 1, dil_rad * 2 + 1))
+        inst_mask = cv2.dilate(single_core, k_rec, iterations=1)
+        inst_mask = cv2.bitwise_and(inst_mask, base_mask)
+        inst_mask[~max_leaf_reach] = 0
+
+        # Pastikan hanya komponen terhubung yang memuat (px, py)
+        _, inst_labels = cv2.connectedComponents(inst_mask, connectivity=8)
+        inst_lbl = inst_labels[py, px]
+        if inst_lbl == 0:
+            continue
+        inst_mask = (inst_labels == inst_lbl).astype(np.uint8) * 255
+
+        # Haluskan kontur helai daun & tutup lubang bercak internalnya
+        k_smooth = max(7, int(min(H, W) * 0.015) | 1)
+        inst_mask = cv2.morphologyEx(
+            inst_mask,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_smooth, k_smooth)),
+            iterations=1,
+        )
+        inst_mask = _fill_small_internal_holes(inst_mask, max_hole_ratio=0.05)
 
         cnts, _ = cv2.findContours(inst_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not cnts:
@@ -375,29 +516,38 @@ def segment_field_leaves(
 
         if area_ratio < min_area_ratio or area_ratio > max_area_ratio:
             continue
-        if aspect_ratio > max_aspect_ratio:
-            # Kontur terlalu tipis/memanjang -> ranting
+        if aspect_ratio > max_aspect_ratio or solidity < min_solidity:
             continue
-        if solidity < min_solidity:
-            # Jika solidity agak rendah akibat tepi bergerigi, cek apakah convex hull-nya berbentuk daun
-            hull = cv2.convexHull(c)
-            _, _, hull_ar = _contour_geometry_metrics(hull)
-            if solidity < 0.42 or hull_ar > max_aspect_ratio:
-                continue
 
         eps = 0.004 * cv2.arcLength(c, closed=True)
         approx = cv2.approxPolyDP(c, eps, closed=True)
         bx, by, bw, bh = cv2.boundingRect(approx)
-        x1, y1, x2, y2 = bx, by, bx + bw, by + bh
+        bbox = (bx, by, bx + bw, by + bh)
 
-        # Skor prioritas: utamakan daun yang dekat ke pusat foto & berukuran wajar
-        cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+        cx, cy = bx + bw / 2.0, by + bh / 2.0
         dist_center = np.hypot((cx - W / 2.0) / (W / 2.0), (cy - H / 2.0) / (H / 2.0))
-        priority = area * solidity / (1.0 + 0.8 * dist_center)
-        leaf_instances.append((priority, approx, (x1, y1, x2, y2), solidity))
+        priority = area * solidity / (1.0 + 0.6 * dist_center)
+        raw_candidates.append((priority, approx, bbox, solidity, inst_mask))
 
-    leaf_instances.sort(key=lambda item: item[0], reverse=True)
-    return [(cnt, bbox, sol) for _, cnt, bbox, sol in leaf_instances]
+    # Urutkan kandidat daun terbaik dan hilangkan duplikat yang tumpang-tindih (IoU > 0.45)
+    raw_candidates.sort(key=lambda item: item[0], reverse=True)
+    kept: List[Tuple[np.ndarray, Tuple[int, int, int, int], float]] = []
+    kept_masks: List[np.ndarray] = []
+
+    for _, approx, bbox, solidity, m_cand in raw_candidates:
+        overlap = False
+        cand_px = float(np.count_nonzero(m_cand))
+        for m_prev in kept_masks:
+            inter = float(np.count_nonzero((m_cand > 0) & (m_prev > 0)))
+            min_a = min(cand_px, float(np.count_nonzero(m_prev)))
+            if inter / max(min_a, 1.0) > 0.45:
+                overlap = True
+                break
+        if not overlap:
+            kept.append((approx, bbox, solidity))
+            kept_masks.append(m_cand)
+
+    return kept
 
 
 def classify_leaf_instance_with_yolo(
@@ -411,8 +561,7 @@ def classify_leaf_instance_with_yolo(
     """
     Mengekstrak 1 helai daun menggunakan maskernya, meletakkannya di atas
     Kanvas Kertas Putih Virtual (menyerupai distribusi dataset teaLeafBD),
-    lalu menjalankan YOLO26n+CA untuk memprediksi kelas penyakit daun tersebut
-    tanpa gangguan ranting/semak di latar belakang.
+    lalu menjalankan YOLO26n+CA untuk memprediksi kelas penyakit daun tersebut.
     """
     H, W = img_bgr.shape[:2]
     x1, y1, x2, y2 = bbox
@@ -423,7 +572,6 @@ def classify_leaf_instance_with_yolo(
     crop = img_bgr[cy1:cy2, cx1:cx2].copy()
     ch, cw = crop.shape[:2]
 
-    # Buat masker kontur pada koordinat crop, dilasi sedikit agar tepi daun alami tetap utuh
     mask_crop = np.zeros((ch, cw), dtype=np.uint8)
     cnt_shifted = contour_abs.copy()
     cnt_shifted[:, :, 0] -= cx1
@@ -433,12 +581,10 @@ def classify_leaf_instance_with_yolo(
         mask_crop, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=1
     )
 
-    # Kanvas kertas putih keabu-abuan seperti latar teaLeafBD (BGR: 236, 238, 238)
     paper_color = np.array([236, 238, 238], dtype=np.uint8)
     isolated_leaf = np.full_like(crop, paper_color)
     isolated_leaf[mask_crop > 0] = crop[mask_crop > 0]
 
-    # Tempatkan di tengah kanvas persegi dengan margin 18%
     side = int(max(ch, cw) * 1.36)
     canvas = np.full((side, side, 3), paper_color, dtype=np.uint8)
     y_off = (side - ch) // 2
@@ -447,24 +593,26 @@ def classify_leaf_instance_with_yolo(
 
     res = model.predict(canvas, conf=0.05, imgsz=imgsz, device=device, verbose=False)[0]
     if res.boxes is not None and len(res.boxes) > 0:
-        # Ambil prediksi dengan confidence tertinggi
         confs = res.boxes.conf.cpu().numpy()
-        best_i = int(np.argmax(confs))
-        cid = int(res.boxes.cls[best_i])
+        clss = res.boxes.cls.cpu().numpy().astype(int)
+
+        # Cek apakah ada prediksi kelas penyakit (0..5)
+        disease_idxs = [i for i, c in enumerate(clss) if c != 6]
+        is_symp, _, _ = compute_leaf_disease_symptom_score(img_bgr, contour_abs)
+        if is_symp and disease_idxs:
+            best_i = max(disease_idxs, key=lambda i: confs[i])
+        else:
+            best_i = int(np.argmax(confs))
+
+        cid = int(clss[best_i])
         conf = float(confs[best_i])
         cname = CLASS_NAMES[cid] if cid < len(CLASS_NAMES) else f"cls{cid}"
         return cid, conf, cname
 
-    # Fallback jika confidence sangat rendah: cek rasio bercak coklat di dalam daun
-    hsv_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-    inside = mask_crop > 0
-    if np.count_nonzero(inside) > 0:
-        h_in = hsv_crop[:, :, 0][inside]
-        s_in = hsv_crop[:, :, 1][inside]
-        lesion_ratio = float(np.mean(((h_in < 20) | (h_in > 150)) & (s_in > 45)))
-        if lesion_ratio > 0.06:
-            return 1, 0.55, CLASS_NAMES[1]  # Brown Blight
-    return 6, 0.60, CLASS_NAMES[6]          # Healty Leaf
+    is_symp, _, _ = compute_leaf_disease_symptom_score(img_bgr, contour_abs)
+    if is_symp:
+        return 1, 0.65, CLASS_NAMES[1]  # Brown Blight
+    return 6, 0.70, CLASS_NAMES[6]      # Healty Leaf
 
 
 class EdgeContourPostProcessor:
@@ -494,7 +642,6 @@ class EdgeContourPostProcessor:
         H, W = roi_bgr.shape[:2]
         roi_area = float(H * W)
 
-        # 1. Gunakan masker daun bebas-ranting terlebih dahulu jika filter_twigs aktif
         if self.cfg.filter_twigs:
             leaf_mask = compute_leaf_mask_no_twigs(roi_bgr)
             green_ratio = float(np.count_nonzero(leaf_mask)) / max(roi_area, 1.0)
@@ -512,7 +659,6 @@ class EdgeContourPostProcessor:
         else:
             contours = []
 
-        # 2. Fallback ke Canny ter-masking jika belum ada kontur
         if not contours:
             gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
             gray = self._clahe.apply(gray)
@@ -605,7 +751,6 @@ class EdgeContourPostProcessor:
                 continue
 
             roi = img_bgr[y1:y2, x1:x2]
-            roi_h, roi_w = roi.shape[:2]
             contour_roi, reason, c_area, solidity = self._find_leaf_contour(roi)
 
             if contour_roi is None:
@@ -636,7 +781,6 @@ class EdgeContourPostProcessor:
             contour_abs[:, :, 0] += x1
             contour_abs[:, :, 1] += y1
 
-            # Periksa apakah kontur menyentuh batas luar gambar (frame kamera)
             is_complete, complete_reason = self._is_contour_complete(
                 contour_abs, H_img, W_img, solidity
             )
@@ -664,16 +808,11 @@ class EdgeContourPostProcessor:
     ) -> Tuple[List[Detection], List[ContourResult], bool]:
         """
         Pipeline cerdas untuk gambar eksternal / lapangan:
-        1. Jalankan prediksi langsung YOLO26n+CA.
-        2. Evaluasi apakah terjadi Domain Shift (misal YOLO memprediksi 1 kotak penuh > 65%
-           area gambar karena latar semak/ranting bukan kertas putih, atau tidak ada kotak
-           daun valid).
-        3. Jika terjadi Domain Shift pada foto semak lapangan, aktifkan segmentasi helai
-           daun bebas-ranting (`segment_field_leaves`) lalu klasifikasikan tiap helai daun
-           menggunakan YOLO26n+CA pada Kanvas Kertas Virtual.
-
-        Returns:
-            (detections, contour_results, used_field_segmentation)
+        - Jika gambar berlatar kertas putih (teaLeafBD), gunakan deteksi langsung YOLO26n+CA.
+        - Jika gambar adalah foto semak kebun (in-situ), segmen per helai daun tunggal
+          menggunakan Core-Geodesic Distance Reconstruction (bebas ranting), klasifikasikan
+          tiap helai daun dengan YOLO26n+CA, dan HANYA tampilkan bounding box pada
+          helai-helai daun yang terdeteksi memiliki penyakit (`only_diseased_in_field=True`).
         """
         H, W = img_bgr.shape[:2]
         img_area = float(H * W)
@@ -681,7 +820,6 @@ class EdgeContourPostProcessor:
         yolo_res = model.predict(img_bgr, conf=conf_thresh, imgsz=imgsz, device=device, verbose=False)[0]
         raw_dets = yolo_result_to_detections(yolo_res)
 
-        # Cek apakah hasil langsung YOLO valid atau justru terkena Domain Shift (kotak raksasa / ranting)
         needs_field_seg = False
         if not is_white_paper_background(img_bgr):
             if len(raw_dets) == 0:
@@ -689,33 +827,37 @@ class EdgeContourPostProcessor:
             else:
                 for d in raw_dets:
                     box_area = float((d.x2 - d.x1) * (d.y2 - d.y1))
-                    if box_area / img_area > 0.65:
-                        # Kotak membungkus hampir seluruh layar (gejala Domain Shift latar semak)
+                    if box_area / img_area > 0.55:
                         needs_field_seg = True
                         break
 
         if not needs_field_seg:
             c_results = self.process_detections(img_bgr, raw_dets)
-            valid_any = any(r.contour is not None for r in c_results)
-            if valid_any:
+            if any(r.contour is not None for r in c_results):
                 return raw_dets, c_results, False
 
-        # Aktifkan Multi-Leaf Field Instance Segmentation (Bebas Ranting)
+        # Segmentasi Per Helai Daun (Core-Geodesic Reconstruction)
         leaf_instances = segment_field_leaves(
             img_bgr,
-            min_area_ratio=0.020,
-            max_area_ratio=0.65,
+            min_area_ratio=0.022,
+            max_area_ratio=0.48,
             min_solidity=self.cfg.min_solidity,
             max_aspect_ratio=self.cfg.max_aspect_ratio,
         )
 
-        field_dets: List[Detection] = []
-        field_contours: List[ContourResult] = []
+        all_dets: List[Detection] = []
+        all_contours: List[ContourResult] = []
+        diseased_dets: List[Detection] = []
+        diseased_contours: List[ContourResult] = []
 
         for cnt_abs, (x1, y1, x2, y2), sol in leaf_instances:
+            has_symptom, symptom_score, symptom_detail = compute_leaf_disease_symptom_score(
+                img_bgr, cnt_abs
+            )
             cid, conf, cname = classify_leaf_instance_with_yolo(
                 model, img_bgr, cnt_abs, (x1, y1, x2, y2), imgsz=imgsz, device=device
             )
+
             det = Detection(
                 x1=int(x1),
                 y1=int(y1),
@@ -728,19 +870,27 @@ class EdgeContourPostProcessor:
             c_area = float(cv2.contourArea(cnt_abs))
             is_comp, comp_reason = self._is_contour_complete(cnt_abs, H, W, sol)
 
-            field_dets.append(det)
-            field_contours.append(
-                ContourResult(
-                    detection=det,
-                    is_complete=is_comp,
-                    contour=cnt_abs,
-                    reason=comp_reason,
-                    contour_area=c_area,
-                    solidity=sol,
-                )
+            c_res = ContourResult(
+                detection=det,
+                is_complete=is_comp,
+                contour=cnt_abs,
+                reason=comp_reason,
+                contour_area=c_area,
+                solidity=sol,
             )
+            all_dets.append(det)
+            all_contours.append(c_res)
 
-        return field_dets, field_contours, True
+            # Simpan ke daftar khusus daun berpenyakit jika:
+            # Kelas bukan Healty Leaf (cid != 6) DAN memiliki gejala bercak/bronzing nyata
+            if cid != 6 and has_symptom:
+                diseased_dets.append(det)
+                diseased_contours.append(c_res)
+
+        if self.cfg.only_diseased_in_field and len(diseased_dets) > 0:
+            return diseased_dets, diseased_contours, True
+
+        return all_dets, all_contours, True
 
     def draw_results(
         self,
@@ -753,22 +903,20 @@ class EdgeContourPostProcessor:
         out_img = img_bgr.copy()
         overlay = out_img.copy()
 
-        # 1. Gambar daun yang TERPOTONG / SUPPRESSED terlebih dahulu (dengan garis putus-putus tanpa blok warna penuh)
         if show_suppressed:
             for res in results:
                 if not res.is_complete:
                     det = res.detection
-                    supp_color = (0, 69, 255)  # Oranye-Merah
+                    supp_color = (0, 69, 255)
                     if res.contour is not None:
                         _draw_dashed_contour(out_img, res.contour, supp_color, thickness=2)
                         lx, ly = int(res.contour[:, 0, 0].min()), int(res.contour[:, 0, 1].min())
                     else:
                         cv2.rectangle(out_img, (det.x1, det.y1), (det.x2, det.y2), supp_color, 1)
                         lx, ly = det.x1, det.y1
-                    short_txt = f"[TERPOTONG] {det.class_name}"
-                    _put_label(out_img, short_txt, max(4, lx), max(18, ly + 15), supp_color, scale=0.45)
+                    short_txt = f"[TERPOTONG] {det.class_name} {det.confidence:.2f}"
+                    _put_label(out_img, short_txt, max(4, lx), max(18, ly + 15), supp_color, scale=0.46)
 
-        # 2. Gambar daun yang UTUH (DITERIMA) dengan poligon kontur penuh yang jelas
         for res in results:
             if not res.is_complete:
                 continue
@@ -834,7 +982,6 @@ class EdgeContourPostProcessor:
 
 
 def _draw_dashed_contour(img: np.ndarray, contour: np.ndarray, color: Tuple[int, int, int], thickness: int = 2):
-    """Menggambar garis kontur putus-putus untuk menandai daun yang terpotong batas gambar."""
     pts = contour.reshape(-1, 2)
     n = len(pts)
     for i in range(n):
@@ -879,15 +1026,12 @@ def yolo_result_to_detections(yolo_result) -> List[Detection]:
 
 if __name__ == "__main__":
     print("=" * 65)
-    print("  Unit Test: EdgeContourPostProcessor + Twig Filter (Fase 3 v2.1)")
+    print("  Unit Test: EdgeContourPostProcessor + Per-Diseased-Leaf (v2.2)")
     print("=" * 65)
     proc = EdgeContourPostProcessor()
 
-    # Buat citra sintetis: latar putih + 1 daun hijau utuh + 1 ranting coklat memanjang
     img_test = np.full((480, 640, 3), 240, dtype=np.uint8)
-    # Gambar daun hijau elips
     cv2.ellipse(img_test, (320, 240), (150, 95), 0, 0, 360, (35, 145, 45), -1)
-    # Gambar ranting coklat tipis di bagian atas
     cv2.line(img_test, (50, 50), (580, 70), (30, 70, 120), 8)
 
     det_leaf = Detection(150, 130, 490, 350, class_id=6, confidence=0.94, class_name="Healty Leaf")

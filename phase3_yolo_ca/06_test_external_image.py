@@ -97,6 +97,7 @@ def test_external_image(
         min_solidity=0.50,
         max_aspect_ratio=4.2,
         filter_twigs=True,
+        only_diseased_in_field=True,
         fallback_to_bbox=False,
     )
     processor = EdgeContourPostProcessor(config=config)
@@ -111,13 +112,13 @@ def test_external_image(
 
     if used_field_seg:
         print(
-            f"[INFO] Mode Foto Semak/Lapangan Aktif: Ranting kayu dieliminasi, "
-            f"ditemukan {len(detections)} helai daun individual."
+            f"[INFO] Mode Per-Daun Berpenyakit Aktif: Ranting & daun sehat diabaikan, "
+            f"ditemukan {len(detections)} helai daun berpenyakit."
         )
     else:
         print(f"[INFO] Mode Deteksi Langsung: ditemukan {len(detections)} kandidat daun.")
 
-    # Panel 2: Visualisasi Bounding Box per Helai Daun (Bebas Ranting)
+    # Panel 2: Visualisasi Bounding Box per Helai Daun Berpenyakit
     img_bbox = img_bgr.copy()
     for det, c_res in zip(detections, contour_results):
         x1, y1, x2, y2 = det.bbox_abs(W, H)
@@ -159,7 +160,7 @@ def test_external_image(
 
     axes[0, 1].imshow(cv2.cvtColor(img_bbox, cv2.COLOR_BGR2RGB))
     axes[0, 1].set_title(
-        f"2. YOLO26n+CA Bounding Box ({len(detections)} daun, ranting difilter)",
+        f"2. YOLO26n+CA Bounding Box ({len(detections)} daun berpenyakit)",
         fontsize=13,
         fontweight="bold",
     )
