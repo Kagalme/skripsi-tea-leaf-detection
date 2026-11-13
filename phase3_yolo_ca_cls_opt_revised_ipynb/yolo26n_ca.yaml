@@ -1,0 +1,58 @@
+# ==============================================================================
+# FASE 3 (REVISED PIPELINE): YOLO26n + Coordinate Attention (CA)
+# Arsitektur Deteksi Bercak Penyakit Daun Teh (7 Kelas)
+# Kompatibel 100% dengan Pretrained yolo26n.pt (24 Layer -> 27 Layer)
+# ==============================================================================
+
+nc: 7
+end2end: True
+reg_max: 1
+
+scales:
+  # [depth, width, max_channels]
+  # Pada skala 'n' (width=0.25, max_channels=1024):
+  # - Layer 4  (C3k2 512)  -> out_ch = min(512, 1024) * 0.25 = 128  => CoordAttYOLO(128, 32)
+  # - Layer 7  (C3k2 512)  -> out_ch = min(512, 1024) * 0.25 = 128  => CoordAttYOLO(128, 32)
+  # - Layer 12 (C2PSA 1024)-> out_ch = min(1024, 1024) * 0.25 = 256 => CoordAttYOLO(256, 32)
+  n: [0.50, 0.25, 1024]
+  s: [0.50, 0.50, 1024]
+  m: [0.50, 1.00, 512]
+  l: [1.00, 1.00, 512]
+  x: [1.00, 1.50, 512]
+
+backbone:
+  - [-1, 1, Conv, [64, 3, 2]]             # 0 - P1/2
+  - [-1, 1, Conv, [128, 3, 2]]            # 1 - P2/4
+  - [-1, 2, C3k2, [256, False, 0.25]]     # 2 - P2/4 (out_ch=64)
+  - [-1, 1, Conv, [256, 3, 2]]            # 3 - P3/8
+  - [-1, 2, C3k2, [512, False, 0.25]]     # 4 - P3/8 (out_ch=128)
+  - [-1, 1, CoordAttYOLO, [128, 32]]      # 5 - CA-P3 (inp=128, out_ch=128, reduction=32)
+
+  - [-1, 1, Conv, [512, 3, 2]]            # 6 - P4/16
+  - [-1, 2, C3k2, [512, True]]            # 7 - P4/16 (out_ch=128)
+  - [-1, 1, CoordAttYOLO, [128, 32]]      # 8 - CA-P4 (inp=128, out_ch=128, reduction=32)
+
+  - [-1, 1, Conv, [1024, 3, 2]]           # 9 - P5/32
+  - [-1, 2, C3k2, [1024, True]]           # 10 - P5/32
+  - [-1, 1, SPPF, [1024, 5, 3, True]]     # 11 - P5/32
+  - [-1, 2, C2PSA, [1024]]                # 12 - P5/32 (out_ch=256)
+  - [-1, 1, CoordAttYOLO, [256, 32]]      # 13 - CA-P5 (inp=256, out_ch=256, reduction=32)
+
+head:
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]] # 14
+  - [[-1, 8], 1, Concat, [1]]                  # 15 cat backbone P4 (CA-P4)
+  - [-1, 2, C3k2, [512, True]]                 # 16
+
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]] # 17
+  - [[-1, 5], 1, Concat, [1]]                  # 18 cat backbone P3 (CA-P3)
+  - [-1, 2, C3k2, [256, True]]                 # 19 P3/8-small (fokus bercak kecil)
+
+  - [-1, 1, Conv, [256, 3, 2]]                 # 20
+  - [[-1, 16], 1, Concat, [1]]                 # 21 cat head P4
+  - [-1, 2, C3k2, [512, True]]                 # 22 P4/16-medium
+
+  - [-1, 1, Conv, [512, 3, 2]]                 # 23
+  - [[-1, 13], 1, Concat, [1]]                 # 24 cat backbone P5 (CA-P5)
+  - [-1, 1, C3k2, [1024, True, 0.5, True]]     # 25 P5/32-large
+
+  - [[19, 22, 25], 1, Detect, [nc]]            # 26 Detect(P3, P4, P5)

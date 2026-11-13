@@ -1,0 +1,13 @@
+# ==============================================================================
+# FASE 3 (REVISED PIPELINE): Konfigurasi Dataset Segmentasi Daun (YOLO26n-seg)
+# Digunakan pada Cell Baru A & B untuk Segmentasi Instance Daun Individual
+# ==============================================================================
+
+path: /content/tea_leaf_seg_dataset
+train: images/train
+val: images/val
+test: images/test
+
+nc: 1
+names:
+  0: tea_leaf
